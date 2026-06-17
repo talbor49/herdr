@@ -18,6 +18,7 @@ pub struct PaneDetail {
     pub state: AgentState,
     pub seen: bool,
     pub custom_status: Option<String>,
+    pub title: Option<String>,
     pub state_labels: HashMap<String, String>,
 }
 
@@ -61,6 +62,7 @@ impl Tab {
                     state: terminal.state,
                     seen: pane.seen,
                     custom_status: presentation.custom_status,
+                    title: presentation.title,
                     state_labels: presentation.state_labels,
                 })
             })
@@ -213,6 +215,39 @@ mod tests {
             labels,
             vec![("planner".into(), "planner".into(), Some(Agent::Pi))]
         );
+    }
+
+    #[test]
+    fn pane_details_carries_effective_title() {
+        let ws = Workspace::test_new("test");
+        let root_pane = ws.tabs[0].root_pane;
+        let mut terminals = HashMap::new();
+        let mut terminal = terminal_for_pane(&ws, root_pane);
+        terminal.set_detected_state(Some(Agent::Claude), AgentState::Working);
+        terminal.set_agent_metadata(crate::terminal::AgentMetadataReport {
+            source: "user:claude-title".into(),
+            agent_label: Some("claude".into()),
+            applies_to_source: None,
+            title: Some("Refactor auth flow".into()),
+            display_agent: None,
+            custom_status: None,
+            state_labels: HashMap::new(),
+            clear_title: false,
+            clear_display_agent: false,
+            clear_custom_status: false,
+            clear_state_labels: false,
+            ttl: None,
+            seq: None,
+        });
+        terminals.insert(terminal.id.clone(), terminal);
+
+        let titles: Vec<_> = ws
+            .pane_details(&terminals)
+            .into_iter()
+            .map(|detail| detail.title)
+            .collect();
+
+        assert_eq!(titles, vec![Some("Refactor auth flow".into())]);
     }
 
     #[test]

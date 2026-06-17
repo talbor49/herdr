@@ -26,6 +26,7 @@ pub(crate) struct AgentPanelEntry {
     pub state: AgentState,
     pub seen: bool,
     pub custom_status: Option<String>,
+    pub title: Option<String>,
     pub state_labels: std::collections::HashMap<String, String>,
 }
 
@@ -154,6 +155,7 @@ fn agent_panel_entries_with_runtimes(
                     state: detail.state,
                     seen: detail.seen,
                     custom_status: detail.custom_status,
+                    title: detail.title,
                     state_labels: detail.state_labels,
                 })
                 .collect()
@@ -177,6 +179,7 @@ fn agent_panel_entries_with_runtimes(
                         state: detail.state,
                         seen: detail.seen,
                         custom_status: detail.custom_status,
+                        title: detail.title,
                         state_labels: detail.state_labels,
                     })
             })
@@ -1141,7 +1144,10 @@ fn render_agent_detail(
             Span::styled("   ", Style::default()),
             Span::styled(label, status_style),
         ];
-        if let Some(agent_label) = &detail.agent_label {
+        if let Some(title) = &detail.title {
+            status_spans.push(Span::styled(" · ", agent_style));
+            status_spans.push(Span::styled(title.clone(), agent_style));
+        } else if let Some(agent_label) = &detail.agent_label {
             status_spans.push(Span::styled(" · ", agent_style));
             status_spans.push(Span::styled(agent_label, agent_style));
         }
@@ -1282,6 +1288,41 @@ mod tests {
         assert_eq!(entries[1].agent_label.as_deref(), Some("claude"));
     }
 
+    #[test]
+    fn agent_panel_entries_carry_agent_title() {
+        let mut app = crate::app::state::AppState::test_new();
+        let ws = Workspace::test_new("one");
+        let pane = ws.tabs[0].root_pane;
+        app.workspaces = vec![ws];
+        app.ensure_test_terminals();
+        let terminal_id = app.workspaces[0].tabs[0].panes[&pane]
+            .attached_terminal_id
+            .clone();
+        let terminal = app.terminals.get_mut(&terminal_id).unwrap();
+        terminal.set_detected_state(Some(Agent::Claude), AgentState::Working);
+        terminal.set_agent_metadata(crate::terminal::AgentMetadataReport {
+            source: "user:claude-title".into(),
+            agent_label: Some("claude".into()),
+            applies_to_source: None,
+            title: Some("Refactor auth flow".into()),
+            display_agent: None,
+            custom_status: None,
+            state_labels: std::collections::HashMap::new(),
+            clear_title: false,
+            clear_display_agent: false,
+            clear_custom_status: false,
+            clear_state_labels: false,
+            ttl: None,
+            seq: None,
+        });
+        app.active = Some(0);
+        app.selected = 0;
+        app.agent_panel_scope = AgentPanelScope::AllWorkspaces;
+
+        let entries = agent_panel_entries(&app);
+        assert_eq!(entries[0].title.as_deref(), Some("Refactor auth flow"));
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn all_workspaces_agent_panel_entries_use_live_root_runtime_cwd_for_workspace_label() {
@@ -1391,6 +1432,7 @@ mod tests {
             state: AgentState::Idle,
             seen: true,
             custom_status: None,
+            title: None,
             state_labels: std::collections::HashMap::new(),
         };
 

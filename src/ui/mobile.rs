@@ -960,6 +960,7 @@ mod tests {
             state: AgentState::Idle,
             seen: true,
             custom_status: None,
+            title: None,
             state_labels: std::collections::HashMap::new(),
         }
     }
