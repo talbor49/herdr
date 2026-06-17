@@ -454,6 +454,7 @@ impl App {
             worktree_open: None,
             worktree_remove: None,
             worktree_directory,
+            worktree_setup_command: config.worktrees.setup.clone(),
             collapsed_space_keys,
             request_complete_onboarding: false,
             name_input: String::new(),
@@ -1294,6 +1295,7 @@ impl App {
         if !invalid_section("worktrees") {
             self.state.worktree_directory =
                 crate::worktree::expand_tilde_absolute_path(&config.worktrees.directory);
+            self.state.worktree_setup_command = config.worktrees.setup.clone();
         }
 
         if !invalid_section("theme") {

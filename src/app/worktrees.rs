@@ -623,6 +623,7 @@ impl App {
                 let path = create.checkout_path.clone();
                 let source_workspace_id = create.source_workspace_id.clone();
                 let source_checkout_path = create.source_checkout_path.clone();
+                let setup_source = create.source_checkout_path.clone();
                 let source_existing_membership = create.source_existing_membership.clone();
                 let repo_key = create.repo_key.clone();
                 let repo_name = create.repo_name.clone();
@@ -659,6 +660,7 @@ impl App {
                             });
                         }
                         self.state.mark_session_dirty();
+                        self.run_worktree_setup_command(ws_idx, &setup_source);
                     }
                     Err(err) => {
                         self.state.config_diagnostic = Some(format!(
@@ -679,6 +681,41 @@ impl App {
             }
         }
     }
+    /// Run the configured `worktrees.setup` command in a freshly created
+    /// worktree's shell, with `$HERDR_SOURCE_CHECKOUT` set to the checkout it was
+    /// created from (so a setup script can copy/link per-checkout env files).
+    fn run_worktree_setup_command(&self, ws_idx: usize, source_checkout: &std::path::Path) {
+        let Some(command) = self
+            .state
+            .worktree_setup_command
+            .as_deref()
+            .map(str::trim)
+            .filter(|command| !command.is_empty())
+        else {
+            return;
+        };
+        let Some(root_pane) = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.tabs.first())
+            .map(|tab| tab.root_pane)
+        else {
+            return;
+        };
+        let Some(runtime) = self.lookup_runtime_sender(ws_idx, root_pane) else {
+            tracing::warn!(ws_idx, "worktree setup skipped: pane runtime not ready");
+            return;
+        };
+        let input = format!(
+            "HERDR_SOURCE_CHECKOUT='{}' {command}\r",
+            source_checkout.display()
+        );
+        if let Err(err) = runtime.try_send_bytes(bytes::Bytes::from(input)) {
+            tracing::warn!(ws_idx, error = %err, "failed to send worktree setup command");
+        }
+    }
+
     pub(crate) fn handle_worktree_remove_finished(&mut self, result: WorktreeRemoveResult) {
         let Some(remove) = &mut self.state.worktree_remove else {
             return;

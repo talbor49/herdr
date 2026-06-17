@@ -414,6 +414,10 @@ pub struct IndexedKeysConfig {
 pub struct WorktreesConfig {
     /// Root directory under which Herdr creates <repo>/<branch-slug> checkouts.
     pub directory: String,
+    /// Optional command run in a new worktree's shell right after it is created
+    /// (e.g. `mise trust && mise install`). The command runs in the new checkout
+    /// with `$HERDR_SOURCE_CHECKOUT` set to the checkout it was created from.
+    pub setup: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -608,6 +612,7 @@ impl Default for WorktreesConfig {
     fn default() -> Self {
         Self {
             directory: "~/.herdr/worktrees".into(),
+            setup: None,
         }
     }
 }
@@ -830,6 +835,23 @@ directory = "~/Projects/herdr-worktrees"
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.worktrees.directory, "~/Projects/herdr-worktrees");
+    }
+
+    #[test]
+    fn worktrees_setup_command_defaults_none_and_parses() {
+        assert_eq!(Config::default().worktrees.setup, None);
+
+        let config: Config = toml::from_str(
+            r#"
+[worktrees]
+setup = "mise trust && mise install"
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            config.worktrees.setup.as_deref(),
+            Some("mise trust && mise install")
+        );
     }
 
     #[test]
