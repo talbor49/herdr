@@ -60,17 +60,22 @@ pub fn git_status_snapshot_for_cwd(
                 branch: git_branch(cwd),
                 ahead_behind: None,
                 space,
+                dirty: None,
             },
             None,
         );
     };
     let branch = fingerprint.branch_name().map(str::to_string);
+    // Working-tree dirtiness is not ref-based, so it can't be keyed by the
+    // fingerprint cache; recompute it on every refresh.
+    let dirty = git_dirty_count(cwd);
 
     if let Some(cached) = cached.filter(|entry| entry.fingerprint == fingerprint) {
         let snapshot = WorkspaceGitStatusSnapshot {
             branch,
             ahead_behind: cached.snapshot.ahead_behind,
             space,
+            dirty,
         };
         return (
             snapshot.clone(),
@@ -89,6 +94,7 @@ pub fn git_status_snapshot_for_cwd(
         branch,
         ahead_behind,
         space,
+        dirty,
     };
     (
         snapshot.clone(),
@@ -96,6 +102,25 @@ pub fn git_status_snapshot_for_cwd(
             fingerprint,
             snapshot,
         }),
+    )
+}
+
+fn git_dirty_count(cwd: &Path) -> Option<usize> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["status", "--porcelain"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(
+        output
+            .stdout
+            .split(|&byte| byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .count(),
     )
 }
 
@@ -268,6 +293,7 @@ mod tests {
                 branch: Some("main".into()),
                 ahead_behind: Some((2, 1)),
                 space: git_space_metadata(&root),
+                dirty: None,
             },
         };
 
@@ -291,6 +317,7 @@ mod tests {
                 branch: Some("main".into()),
                 ahead_behind: Some((4, 0)),
                 space: git_space_metadata(&root),
+                dirty: None,
             },
         };
         std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/feature\n").unwrap();
@@ -324,6 +351,7 @@ mod tests {
                 branch: Some("main".into()),
                 ahead_behind: Some((0, 3)),
                 space: git_space_metadata(&root),
+                dirty: None,
             },
         };
         std::fs::write(root.join(".git/config"), "").unwrap();

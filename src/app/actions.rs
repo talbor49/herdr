@@ -2355,6 +2355,10 @@ impl AppState {
                 ws.cached_git_ahead_behind = result.ahead_behind;
                 changed = true;
             }
+            if ws.cached_git_dirty != result.dirty {
+                ws.cached_git_dirty = result.dirty;
+                changed = true;
+            }
             if ws.cached_git_space != result.space {
                 ws.cached_git_space = result.space;
                 changed = true;
@@ -3528,14 +3532,17 @@ mod tests {
                 branch: Some("main".into()),
                 ahead_behind: Some((2, 1)),
                 space: None,
+                dirty: Some(3),
             }],
         );
 
         assert!(changed);
         assert_eq!(state.workspaces[0].branch().as_deref(), Some("main"));
         assert_eq!(state.workspaces[0].git_ahead_behind(), Some((2, 1)));
+        assert_eq!(state.workspaces[0].git_dirty(), Some(3));
         assert_eq!(state.workspaces[1].id, second_id);
         assert_eq!(state.workspaces[1].git_ahead_behind(), None);
+        assert_eq!(state.workspaces[1].git_dirty(), None);
     }
 
     #[test]
@@ -3554,6 +3561,7 @@ mod tests {
                 branch: Some("main".into()),
                 ahead_behind: Some((0, 1)),
                 space: None,
+                dirty: None,
             }],
         );
 
@@ -3579,6 +3587,7 @@ mod tests {
                 branch: None,
                 ahead_behind: None,
                 space: None,
+                dirty: None,
             }],
         );
 
@@ -3610,6 +3619,7 @@ mod tests {
                     repo_root: "/other/repo".into(),
                     is_linked_worktree: false,
                 }),
+                dirty: None,
             }],
         );
 

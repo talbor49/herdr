@@ -1033,6 +1033,13 @@ fn render_workspace_list(
                         spans.push(Span::styled(label, Style::default().fg(color)));
                     }
                 }
+                if let Some(dirty) = ws.git_dirty().filter(|count| *count > 0) {
+                    spans.push(Span::styled(" ", Style::default()));
+                    spans.push(Span::styled(
+                        format!("●{dirty}"),
+                        Style::default().fg(p.peach),
+                    ));
+                }
                 frame.render_widget(
                     Paragraph::new(Line::from(spans)),
                     Rect::new(card.rect.x, row_y + 1, card.rect.width, 1),
