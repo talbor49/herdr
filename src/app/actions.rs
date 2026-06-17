@@ -12,9 +12,9 @@ use crate::workspace::WorkspaceGitStatus;
 use unicode_width::UnicodeWidthChar;
 
 use super::state::{
-    text_matches_query, AgentNotificationDelivery, AppState, Mode, NavigatorRow,
-    NavigatorStateFilter, NavigatorTarget, PaneFocusTarget, PendingAgentNotification, ToastKind,
-    ToastNotification, ToastTarget, ViewLayout,
+    AgentNotificationDelivery, AppState, Mode, NavigatorRow, NavigatorStateFilter, NavigatorTarget,
+    PaneFocusTarget, PendingAgentNotification, ToastKind, ToastNotification, ToastTarget,
+    ViewLayout,
 };
 
 fn is_background_completion_transition(prev_state: AgentState, new_state: AgentState) -> bool {
@@ -333,7 +333,7 @@ impl AppState {
         terminal_runtimes: &crate::terminal::TerminalRuntimeRegistry,
     ) {
         self.navigator.query.clear();
-        self.navigator.search_focused = false;
+        self.navigator.search_focused = true;
         self.navigator.state_filter = None;
         self.navigator.scroll = 0;
         self.navigator.expanded_workspaces.clear();
@@ -375,7 +375,8 @@ impl AppState {
                 NavigatorQueryKind::Text => navigator_matches(&query, &workspace_search_text),
             };
 
-            let child_rows = self.navigator_child_rows(ws_idx, query_kind, &query);
+            let child_rows =
+                self.navigator_child_rows(ws_idx, query_kind, &query, terminal_runtimes);
             if !workspace_matches && child_rows.is_empty() {
                 continue;
             }
@@ -409,6 +410,7 @@ impl AppState {
         ws_idx: usize,
         query_kind: NavigatorQueryKind,
         query: &str,
+        terminal_runtimes: &crate::terminal::TerminalRuntimeRegistry,
     ) -> Vec<NavigatorRow> {
         let Some(ws) = self.workspaces.get(ws_idx) else {
             return Vec::new();
@@ -424,7 +426,8 @@ impl AppState {
                 }
                 NavigatorQueryKind::Text => navigator_matches(query, &row.search_text),
             });
-            let pane_rows = self.navigator_pane_rows_for_tab(ws_idx, tab_idx, multi_tab);
+            let pane_rows =
+                self.navigator_pane_rows_for_tab(ws_idx, tab_idx, multi_tab, terminal_runtimes);
             let filtered_panes = match query_kind {
                 NavigatorQueryKind::Empty => pane_rows,
                 NavigatorQueryKind::State(filter) => pane_rows
@@ -483,6 +486,7 @@ impl AppState {
         ws_idx: usize,
         tab_idx: usize,
         multi_tab: bool,
+        terminal_runtimes: &crate::terminal::TerminalRuntimeRegistry,
     ) -> Vec<NavigatorRow> {
         let Some(ws) = self.workspaces.get(ws_idx) else {
             return Vec::new();
@@ -497,8 +501,11 @@ impl AppState {
             };
             let terminal = self.terminals.get(&pane.attached_terminal_id);
             let pane_number = ws.public_pane_number(pane_id).unwrap_or(0);
-            let label = terminal
-                .and_then(|terminal| terminal.effective_title())
+            let chat_title = self
+                .runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, pane_id)
+                .and_then(|runtime| runtime.chat_title());
+            let label = chat_title
+                .or_else(|| terminal.and_then(|terminal| terminal.effective_title()))
                 .or_else(|| {
                     terminal
                         .and_then(|terminal| terminal.manual_label.as_deref().map(str::to_string))
@@ -758,7 +765,26 @@ fn navigator_state_filter_matches(
 }
 
 fn navigator_matches(query: &str, text: &str) -> bool {
-    text_matches_query(query, text)
+    let haystack = text.to_lowercase();
+    query
+        .to_lowercase()
+        .split_whitespace()
+        .all(|needle| is_subsequence(needle, &haystack))
+}
+
+/// Case-insensitive fuzzy match: every char of `needle` appears in `haystack`
+/// in order (not necessarily contiguous). Inputs are already lowercased.
+fn is_subsequence(needle: &str, haystack: &str) -> bool {
+    let mut hay = haystack.chars();
+    'next: for nc in needle.chars() {
+        for hc in hay.by_ref() {
+            if hc == nc {
+                continue 'next;
+            }
+        }
+        return false;
+    }
+    true
 }
 
 fn launch_label(argv: Option<&Vec<String>>) -> Option<String> {
@@ -3434,6 +3460,56 @@ mod tests {
         assert!(rows
             .iter()
             .any(|row| !row.is_workspace && row.label.contains("weekly")));
+    }
+
+    #[test]
+    fn navigator_opens_in_search_focused_mode() {
+        let mut state = app_with_workspaces(&["one"]);
+        state.open_navigator();
+        assert!(state.navigator.search_focused);
+    }
+
+    #[test]
+    fn navigator_fuzzy_search_matches_subsequence() {
+        let mut state = app_with_workspaces(&["one"]);
+        let root = state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = state.workspaces[0].terminal_id(root).cloned().unwrap();
+        state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_manual_label("Refactor auth flow".into());
+        state.open_navigator();
+        // Non-contiguous subsequence that substring search would miss.
+        state.navigator.query = "rfaflow".into();
+
+        let rows = state.navigator_rows();
+        assert!(rows
+            .iter()
+            .any(|row| !row.is_workspace && row.label.contains("Refactor auth flow")));
+
+        state.navigator.query = "zzqx".into();
+        assert!(!state.navigator_rows().iter().any(|row| !row.is_workspace));
+    }
+
+    #[tokio::test]
+    async fn navigator_pane_label_uses_osc_chat_title() {
+        let mut state = app_with_workspaces(&["one"]);
+        state.ensure_test_terminals();
+        let root = state.workspaces[0].tabs[0].root_pane;
+        // OSC 2 set-title: working braille status glyph + the chat title.
+        let runtime = crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b"");
+        runtime.test_process_pty_bytes("\x1b]2;\u{2810} fix-the-collector\x07".as_bytes());
+        state.workspaces[0].insert_test_runtime(root, runtime);
+
+        state.open_navigator();
+        let rows = state.navigator_rows();
+        assert!(
+            rows.iter()
+                .any(|row| !row.is_workspace && row.label == "fix-the-collector"),
+            "navigator pane label should use the stripped OSC chat title; got {:?}",
+            rows.iter().map(|r| r.label.clone()).collect::<Vec<_>>()
+        );
     }
 
     #[test]

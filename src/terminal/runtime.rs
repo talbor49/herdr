@@ -283,6 +283,13 @@ impl TerminalRuntime {
         self.0.agent_osc_title()
     }
 
+    /// The agent's chat/task title from the OSC terminal title, with the
+    /// leading status glyph (braille spinner when working, ✳ when idle that
+    /// Claude prepends) stripped. `None` when there is no usable title.
+    pub fn chat_title(&self) -> Option<String> {
+        chat_title_from_osc(&self.agent_osc_title())
+    }
+
     pub fn agent_osc_progress(&self) -> String {
         self.0.agent_osc_progress()
     }
@@ -416,6 +423,54 @@ impl TerminalRuntime {
 
     pub(crate) fn current_size(&self) -> (u16, u16) {
         self.0.current_size()
+    }
+}
+
+fn chat_title_from_osc(osc_title: &str) -> Option<String> {
+    let s = osc_title.trim_start();
+    let first = s.chars().next()?;
+    // Claude prefixes the title with a non-ASCII status glyph (braille spinner
+    // when working, ✳ when idle) followed by a space; drop it if present.
+    let stripped = if !first.is_ascii() && s[first.len_utf8()..].starts_with(' ') {
+        s[first.len_utf8()..].trim()
+    } else {
+        s.trim_end()
+    };
+    (!stripped.is_empty()).then(|| stripped.to_string())
+}
+
+#[cfg(test)]
+mod chat_title_tests {
+    use super::chat_title_from_osc;
+
+    #[test]
+    fn strips_working_braille_glyph() {
+        assert_eq!(
+            chat_title_from_osc("\u{2810} fix-collector-v2-data-quality").as_deref(),
+            Some("fix-collector-v2-data-quality")
+        );
+    }
+
+    #[test]
+    fn strips_idle_glyph() {
+        assert_eq!(
+            chat_title_from_osc("\u{2733} write-the-docs").as_deref(),
+            Some("write-the-docs")
+        );
+    }
+
+    #[test]
+    fn keeps_plain_ascii_title() {
+        assert_eq!(
+            chat_title_from_osc("plain title").as_deref(),
+            Some("plain title")
+        );
+    }
+
+    #[test]
+    fn blank_or_glyph_only_is_none() {
+        assert_eq!(chat_title_from_osc("   "), None);
+        assert_eq!(chat_title_from_osc("\u{2810} "), None);
     }
 }
 
