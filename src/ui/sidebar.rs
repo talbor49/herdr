@@ -135,7 +135,7 @@ fn agent_panel_entries_with_runtimes(
         }
     };
 
-    match app.agent_panel_scope {
+    let mut entries: Vec<AgentPanelEntry> = match app.agent_panel_scope {
         AgentPanelScope::CurrentWorkspace => {
             let Some(ws_idx) = agent_panel_current_workspace_idx(app) else {
                 return Vec::new();
@@ -184,7 +184,20 @@ fn agent_panel_entries_with_runtimes(
                     })
             })
             .collect(),
+    };
+
+    // Prefer the agent's live chat/task title (the OSC terminal title, e.g.
+    // Claude's chat title) over the metadata title when a runtime is available.
+    for entry in &mut entries {
+        if let Some(title) = app
+            .runtime_for_pane_in_workspace(terminal_runtimes, entry.ws_idx, entry.pane_id)
+            .and_then(|runtime| runtime.chat_title())
+        {
+            entry.title = Some(title);
+        }
     }
+
+    entries
 }
 
 pub(super) fn agent_panel_status_key(state: AgentState, seen: bool) -> &'static str {
@@ -541,26 +554,39 @@ pub(crate) fn agent_panel_body_rect(area: Rect, has_scrollbar: bool) -> Rect {
     Rect::new(area.x, body_y, body_width, body_height)
 }
 
-fn agent_panel_visible_count(area: Rect) -> usize {
+fn agent_panel_entry_rows(entry: &AgentPanelEntry) -> u16 {
+    // name line + status line, plus a dim title line when a chat title is shown.
+    if entry.title.is_some() {
+        3
+    } else {
+        2
+    }
+}
+
+fn agent_panel_visible_count(app: &AppState, area: Rect) -> usize {
     let body = agent_panel_body_rect(area, false);
     if body.width == 0 || body.height < 2 {
         return 0;
     }
 
+    // Entries are variable height (titled entries take an extra line), so count
+    // how many fit on the final page (from the end) using their actual heights.
+    let entries = agent_panel_entries(app);
     let mut used_rows = 0u16;
     let mut visible = 0usize;
-    while used_rows.saturating_add(2) <= body.height {
-        used_rows = used_rows.saturating_add(2);
-        visible += 1;
-        if used_rows < body.height {
-            used_rows = used_rows.saturating_add(1);
+    for entry in entries.iter().rev() {
+        let block = agent_panel_entry_rows(entry).saturating_add(1); // content + gap
+        if used_rows.saturating_add(block) > body.height {
+            break;
         }
+        used_rows = used_rows.saturating_add(block);
+        visible += 1;
     }
     visible
 }
 
 pub(crate) fn agent_panel_scroll_metrics(app: &AppState, area: Rect) -> crate::pane::ScrollMetrics {
-    let viewport_rows = agent_panel_visible_count(area);
+    let viewport_rows = agent_panel_visible_count(app, area);
     let total_rows = agent_panel_entries(app).len();
     let max_offset_from_bottom = total_rows.saturating_sub(viewport_rows);
     let offset_from_bottom = total_rows
@@ -1144,10 +1170,7 @@ fn render_agent_detail(
             Span::styled("   ", Style::default()),
             Span::styled(label, status_style),
         ];
-        if let Some(title) = &detail.title {
-            status_spans.push(Span::styled(" · ", agent_style));
-            status_spans.push(Span::styled(title.clone(), agent_style));
-        } else if let Some(agent_label) = &detail.agent_label {
+        if let Some(agent_label) = &detail.agent_label {
             status_spans.push(Span::styled(" · ", agent_style));
             status_spans.push(Span::styled(agent_label, agent_style));
         }
@@ -1160,6 +1183,22 @@ fn render_agent_detail(
             Rect::new(body.x, row_y, body.width, 1),
         );
         row_y += 1;
+
+        // Chat title (e.g. Claude's) on its own dim line below, so long titles fit.
+        if let Some(title) = &detail.title {
+            if row_y < body_bottom {
+                let title_text = truncate_text(title, body.width.saturating_sub(3) as usize);
+                frame.render_widget(
+                    Paragraph::new(Line::from(vec![
+                        Span::styled("   ", Style::default()),
+                        Span::styled(title_text, agent_style),
+                    ]))
+                    .style(row_style),
+                    Rect::new(body.x, row_y, body.width, 1),
+                );
+                row_y += 1;
+            }
+        }
 
         if row_y < body_bottom {
             row_y += 1;
