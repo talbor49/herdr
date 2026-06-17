@@ -1031,6 +1031,16 @@ impl Workspace {
         Some(self.identity_cwd.clone())
     }
 
+    /// Stable per-checkout seed used to pick a consistent accent color. Uses the
+    /// git checkout root (distinct per clone *and* per worktree) when available,
+    /// falling back to the workspace's identity cwd.
+    pub(crate) fn accent_color_seed(&self) -> String {
+        self.cached_git_space
+            .as_ref()
+            .map(|space| space.checkout_key.clone())
+            .unwrap_or_else(|| self.identity_cwd.to_string_lossy().into_owned())
+    }
+
     pub fn resolved_identity_cwd_from(
         &self,
         terminals: &HashMap<TerminalId, TerminalState>,

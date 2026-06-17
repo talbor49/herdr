@@ -284,7 +284,14 @@ pub(super) fn render_panes(
                     })
                     .and_then(|label| pane_border_title(&label, info.rect.width))
                 {
-                    block = block.title(Line::from(Span::styled(title, border_style)));
+                    let title_color = super::sidebar::workspace_accent_color(
+                        &ws.accent_color_seed(),
+                        &app.palette,
+                    );
+                    block = block.title(Line::from(Span::styled(
+                        title,
+                        border_style.fg(title_color),
+                    )));
                 }
                 frame.render_widget(block, info.rect);
             }

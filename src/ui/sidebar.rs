@@ -1,6 +1,6 @@
 use ratatui::{
     layout::{Alignment, Rect},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
     Frame,
@@ -208,6 +208,16 @@ pub(super) fn agent_panel_status_key(state: AgentState, seen: bool) -> &'static 
         (AgentState::Blocked, _) => "blocked",
         (AgentState::Unknown, _) => "unknown",
     }
+}
+
+/// Stable accent color for a workspace's checkout, hashed onto the theme's
+/// distinct named colors so each clone/worktree is visually distinguishable.
+pub(crate) fn workspace_accent_color(seed: &str, p: &Palette) -> Color {
+    let palette = [p.mauve, p.blue, p.teal, p.green, p.peach, p.yellow, p.red];
+    let hash = seed.bytes().fold(0u64, |acc, b| {
+        acc.wrapping_mul(31).wrapping_add(u64::from(b))
+    });
+    palette[(hash % palette.len() as u64) as usize]
 }
 
 fn truncate_text(text: &str, max_width: usize) -> String {
@@ -933,10 +943,11 @@ fn render_workspace_list(
             }
         }
 
+        let accent = workspace_accent_color(&ws.accent_color_seed(), p);
         let name_style = if selected || is_active || is_dragged {
-            Style::default().fg(p.text).add_modifier(Modifier::BOLD)
+            Style::default().fg(accent).add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(p.subtext0)
+            Style::default().fg(accent)
         };
 
         let (icon, icon_style) = state_dot(agg_state, agg_seen, p);
@@ -1360,6 +1371,25 @@ mod tests {
 
         let entries = agent_panel_entries(&app);
         assert_eq!(entries[0].title.as_deref(), Some("Refactor auth flow"));
+    }
+
+    #[test]
+    fn workspace_accent_color_is_stable_and_themed() {
+        let app = crate::app::state::AppState::test_new();
+        let p = &app.palette;
+        let themed = [p.mauve, p.blue, p.teal, p.green, p.peach, p.yellow, p.red];
+
+        let first = workspace_accent_color("/Users/tal/dev/glow2", p);
+        let again = workspace_accent_color("/Users/tal/dev/glow2", p);
+        assert_eq!(
+            first, again,
+            "same checkout seed must map to the same color"
+        );
+        assert!(
+            themed.contains(&first),
+            "accent must be a theme palette color"
+        );
+        assert!(themed.contains(&workspace_accent_color("/Users/tal/dev/herdr", p)));
     }
 
     #[cfg(unix)]
