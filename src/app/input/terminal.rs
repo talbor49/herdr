@@ -97,13 +97,19 @@ impl App {
         // focused pane doesn't handle its own scrolling (e.g., a plain shell
         // with mouse off). Modified page keys are pane shortcuts, and release
         // events should not produce a second host-scroll action.
+        // Apps in application-cursor mode read the page keys themselves — pagers
+        // like less stay on the main screen but enable it via their keypad init,
+        // so forward to them rather than stealing the keys for host scrollback.
         // Only intercept when we know the pane state; if input_state is unknown,
         // fail-open and forward the key to the pane.
         if matches!(key_event.code, KeyCode::PageUp | KeyCode::PageDown)
             && key_event.modifiers.is_empty()
         {
             if let Some(input_state) = rt.input_state() {
-                if !input_state.alternate_screen && !input_state.mouse_reporting_enabled() {
+                if !input_state.alternate_screen
+                    && !input_state.mouse_reporting_enabled()
+                    && !input_state.application_cursor
+                {
                     if key_event.kind == crossterm::event::KeyEventKind::Release {
                         return None;
                     }
@@ -1069,6 +1075,52 @@ mod tests {
             .and_then(crate::terminal::TerminalRuntime::scroll_metrics)
             .expect("scroll metrics after PageDown");
         assert_eq!(after_down.offset_from_bottom, 0);
+    }
+
+    #[tokio::test]
+    async fn page_keys_forward_to_app_in_application_cursor_mode() {
+        let mut app = app_for_mouse_test();
+        let mut ws = Workspace::test_new("test");
+        let pane_id = ws.tabs[0].root_pane;
+        let pane_infos = ws.tabs[0].layout.panes(Rect::new(26, 2, 80, 18));
+        let info = pane_infos[0].clone();
+        // DECCKM (application cursor keys) set, like a pager such as less running
+        // on the main screen via git's `LESS=FRX`.
+        let mut bytes = b"\x1b[?1h".to_vec();
+        bytes.extend_from_slice(&numbered_lines_bytes(64));
+        ws.tabs[0].runtimes.insert(
+            pane_id,
+            crate::terminal::TerminalRuntime::test_with_scrollback_bytes(
+                info.inner_rect.width,
+                info.inner_rect.height,
+                16 * 1024,
+                &bytes,
+            ),
+        );
+
+        app.state.workspaces = vec![ws];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+        app.state.view.pane_infos = pane_infos;
+
+        let input_state = app
+            .state
+            .runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
+            .and_then(crate::terminal::TerminalRuntime::input_state)
+            .expect("input state");
+        assert!(input_state.application_cursor);
+        assert!(!input_state.alternate_screen);
+
+        let prepared = app.prepare_terminal_key_forward(TerminalKey::new(
+            KeyCode::PageDown,
+            KeyModifiers::empty(),
+        ));
+        assert!(
+            prepared.is_some(),
+            "page key must forward to the app in application-cursor mode"
+        );
+        assert!(!prepared.unwrap().bytes.is_empty());
     }
 
     #[tokio::test]
