@@ -27,9 +27,9 @@ pub enum Sound {
 }
 
 /// Play a notification sound in a background thread.
-/// Silently does nothing if no audio player is available.
+/// Silently does nothing if sound is disabled or no audio player is available.
 pub fn play(sound: Sound, config: &crate::config::SoundConfig) {
-    if sound_playback_disabled_by_env() {
+    if !playback_allowed(config) {
         return;
     }
 
@@ -53,6 +53,14 @@ pub fn play(sound: Sound, config: &crate::config::SoundConfig) {
             warn!(sound = ?sound, err = %err, "sound playback failed");
         }
     });
+}
+
+/// Authoritative gate for all sound playback. Enforcing `ui.sound.enabled` here,
+/// at the single chokepoint every caller funnels through, guarantees no code path
+/// can play a sound while the master switch is off — even if a caller forgets to
+/// gate it upstream.
+fn playback_allowed(config: &crate::config::SoundConfig) -> bool {
+    config.enabled && !sound_playback_disabled_by_env()
 }
 
 fn sound_playback_disabled_by_env() -> bool {
@@ -238,6 +246,18 @@ mod tests {
     #[test]
     fn temp_sound_paths_are_unique() {
         assert_ne!(temp_sound_path(), temp_sound_path());
+    }
+
+    #[test]
+    fn disabled_sound_config_blocks_playback() {
+        let config = crate::config::SoundConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        assert!(
+            !playback_allowed(&config),
+            "playback must be refused when ui.sound.enabled is false"
+        );
     }
 
     #[cfg(not(any(windows, target_os = "macos")))]
