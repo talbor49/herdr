@@ -573,6 +573,94 @@ fn agent_panel_entry_rows(entry: &AgentPanelEntry) -> u16 {
     }
 }
 
+struct AgentPanelRowLayout {
+    ws_idx: usize,
+    tab_idx: usize,
+    pane_id: crate::layout::PaneId,
+    name_y: u16,
+    status_y: u16,
+    title_y: Option<u16>,
+    block: Rect,
+}
+
+/// Single source of truth for the agent-panel row geometry shared by the
+/// renderer and the click hit-testing, so the two can never drift. Titled
+/// entries occupy a third line, and the returned `block` spans every line of
+/// the entry so the whole entry (name, status, and title) is clickable.
+fn agent_panel_row_layout(
+    entries: &[AgentPanelEntry],
+    body: Rect,
+    scroll: usize,
+) -> Vec<AgentPanelRowLayout> {
+    if body.width == 0 || body.height < 2 {
+        return Vec::new();
+    }
+
+    let body_bottom = body.y + body.height;
+    let mut rows = Vec::new();
+    let mut row_y = body.y;
+    for entry in entries.iter().skip(scroll) {
+        if row_y.saturating_add(1) >= body_bottom {
+            break;
+        }
+
+        let name_y = row_y;
+        let status_y = row_y + 1;
+        let mut next_y = row_y.saturating_add(2);
+        let title_y = if entry.title.is_some() && next_y < body_bottom {
+            let y = next_y;
+            next_y = next_y.saturating_add(1);
+            Some(y)
+        } else {
+            None
+        };
+
+        rows.push(AgentPanelRowLayout {
+            ws_idx: entry.ws_idx,
+            tab_idx: entry.tab_idx,
+            pane_id: entry.pane_id,
+            name_y,
+            status_y,
+            title_y,
+            block: Rect::new(body.x, row_y, body.width, next_y - row_y),
+        });
+
+        if next_y < body_bottom {
+            next_y = next_y.saturating_add(1);
+        }
+        row_y = next_y;
+    }
+    rows
+}
+
+pub(crate) fn compute_agent_panel_card_areas(
+    app: &AppState,
+    terminal_runtimes: &TerminalRuntimeRegistry,
+    sidebar_area: Rect,
+) -> Vec<crate::app::state::AgentPanelCardArea> {
+    if app.sidebar_collapsed {
+        return Vec::new();
+    }
+
+    let (_, detail_area) = expanded_sidebar_sections(sidebar_area, app.sidebar_section_split);
+    let metrics = agent_panel_scroll_metrics(app, detail_area);
+    let body = agent_panel_body_rect(detail_area, should_show_scrollbar(metrics));
+    if body == Rect::default() {
+        return Vec::new();
+    }
+
+    let entries = agent_panel_entries_from(app, terminal_runtimes);
+    agent_panel_row_layout(&entries, body, app.agent_panel_scroll)
+        .into_iter()
+        .map(|row| crate::app::state::AgentPanelCardArea {
+            ws_idx: row.ws_idx,
+            tab_idx: row.tab_idx,
+            pane_id: row.pane_id,
+            rect: row.block,
+        })
+        .collect()
+}
+
 fn agent_panel_visible_count(app: &AppState, area: Rect) -> usize {
     let body = agent_panel_body_rect(area, false);
     if body.width == 0 || body.height < 2 {
@@ -1134,13 +1222,8 @@ fn render_agent_detail(
         return;
     }
 
-    let mut row_y = body.y;
-    let body_bottom = body.y + body.height;
-    for detail in details.iter().skip(app.agent_panel_scroll) {
-        if row_y.saturating_add(1) >= body_bottom {
-            break;
-        }
-
+    let layout = agent_panel_row_layout(&details, body, app.agent_panel_scroll);
+    for (detail, row) in details.iter().skip(app.agent_panel_scroll).zip(layout.iter()) {
         // Check if this agent entry corresponds to the active session
         let is_active = app.is_active_pane(detail.ws_idx, detail.tab_idx, detail.pane_id);
 
@@ -1180,9 +1263,8 @@ fn render_agent_detail(
         ]);
         frame.render_widget(
             Paragraph::new(name_line).style(row_style),
-            Rect::new(body.x, row_y, body.width, 1),
+            Rect::new(body.x, row.name_y, body.width, 1),
         );
-        row_y += 1;
 
         let mut status_spans = vec![
             Span::styled("   ", Style::default()),
@@ -1198,28 +1280,20 @@ fn render_agent_detail(
         }
         frame.render_widget(
             Paragraph::new(Line::from(status_spans)).style(row_style),
-            Rect::new(body.x, row_y, body.width, 1),
+            Rect::new(body.x, row.status_y, body.width, 1),
         );
-        row_y += 1;
 
         // Chat title (e.g. Claude's) on its own dim line below, so long titles fit.
-        if let Some(title) = &detail.title {
-            if row_y < body_bottom {
-                let title_text = truncate_text(title, body.width.saturating_sub(3) as usize);
-                frame.render_widget(
-                    Paragraph::new(Line::from(vec![
-                        Span::styled("   ", Style::default()),
-                        Span::styled(title_text, agent_style),
-                    ]))
-                    .style(row_style),
-                    Rect::new(body.x, row_y, body.width, 1),
-                );
-                row_y += 1;
-            }
-        }
-
-        if row_y < body_bottom {
-            row_y += 1;
+        if let (Some(title), Some(title_y)) = (&detail.title, row.title_y) {
+            let title_text = truncate_text(title, body.width.saturating_sub(3) as usize);
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("   ", Style::default()),
+                    Span::styled(title_text, agent_style),
+                ]))
+                .style(row_style),
+                Rect::new(body.x, title_y, body.width, 1),
+            );
         }
     }
 

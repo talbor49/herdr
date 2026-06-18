@@ -457,33 +457,23 @@ impl AppState {
             return None;
         }
 
-        let detail_area = self.agent_panel_rect();
-        let metrics = crate::ui::agent_panel_scroll_metrics(self, detail_area);
-        let body = crate::ui::agent_panel_body_rect(
-            detail_area,
-            crate::ui::should_show_scrollbar(metrics),
-        );
-        if body.height < 2 || row < body.y || row >= body.y + body.height {
-            return None;
-        }
+        let cards = if self.view.agent_panel_card_areas.is_empty() {
+            crate::ui::compute_agent_panel_card_areas(
+                self,
+                &crate::terminal::TerminalRuntimeRegistry::new(),
+                self.view.sidebar_rect,
+            )
+        } else {
+            self.view.agent_panel_card_areas.clone()
+        };
 
-        let mut row_y = body.y;
-        for detail in crate::ui::agent_panel_entries(self)
-            .into_iter()
-            .skip(self.agent_panel_scroll)
-        {
-            if row_y.saturating_add(1) >= body.y + body.height {
-                break;
-            }
-            if row == row_y || row == row_y + 1 {
-                return Some((detail.ws_idx, detail.tab_idx, detail.pane_id));
-            }
-            row_y = row_y.saturating_add(2);
-            if row_y < body.y + body.height {
-                row_y = row_y.saturating_add(1);
-            }
-        }
-        None
+        cards.iter().find_map(|card| {
+            (row >= card.rect.y && row < card.rect.y + card.rect.height).then_some((
+                card.ws_idx,
+                card.tab_idx,
+                card.pane_id,
+            ))
+        })
     }
 }
 
@@ -895,13 +885,14 @@ mod tests {
         app.state.selected = 0;
         app.state.mode = Mode::Terminal;
         app.state.agent_panel_scroll = 1;
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+        assert_eq!(app.state.agent_panel_scroll, 1, "entries should stay scrolled");
 
-        let detail_area = app.state.agent_panel_rect();
-        let body = crate::ui::agent_panel_body_rect(detail_area, true);
+        let first_visible = app.state.view.agent_panel_card_areas[0].rect;
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
-            body.x + 1,
-            body.y,
+            first_visible.x + 1,
+            first_visible.y,
         ));
 
         assert_eq!(app.state.workspaces[0].active_tab, second_tab);
@@ -910,6 +901,135 @@ mod tests {
             second_pane
         );
         assert_eq!(app.state.mode, Mode::Terminal);
+    }
+
+    fn set_chat_title(terminal: &mut crate::terminal::TerminalState, title: &str) {
+        terminal.set_detected_state(Some(Agent::Claude), crate::detect::AgentState::Working);
+        terminal.set_agent_metadata(crate::terminal::AgentMetadataReport {
+            source: "user:claude-title".into(),
+            agent_label: Some("claude".into()),
+            applies_to_source: None,
+            title: Some(title.into()),
+            display_agent: None,
+            custom_status: None,
+            state_labels: std::collections::HashMap::new(),
+            clear_title: false,
+            clear_display_agent: false,
+            clear_custom_status: false,
+            clear_state_labels: false,
+            ttl: None,
+            seq: None,
+        });
+    }
+
+    #[test]
+    fn clicking_titled_agent_entry_title_line_switches_to_that_pane() {
+        let mut app = app_for_mouse_test();
+        let mut ws = Workspace::test_new("test");
+        let first_pane = ws.tabs[0].root_pane;
+        let titled_tab = ws.test_add_tab(Some("logs"));
+        let titled_pane = ws.tabs[titled_tab].root_pane;
+        app.state.workspaces = vec![ws];
+        app.state.ensure_test_terminals();
+        let first_terminal_id = app.state.workspaces[0].tabs[0].panes[&first_pane]
+            .attached_terminal_id
+            .clone();
+        app.state
+            .terminals
+            .get_mut(&first_terminal_id)
+            .unwrap()
+            .detected_agent = Some(Agent::Pi);
+        let titled_terminal_id = app.state.workspaces[0].tabs[titled_tab].panes[&titled_pane]
+            .attached_terminal_id
+            .clone();
+        set_chat_title(
+            app.state.terminals.get_mut(&titled_terminal_id).unwrap(),
+            "Refactor auth flow",
+        );
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 40));
+
+        let titled = *app
+            .state
+            .view
+            .agent_panel_card_areas
+            .iter()
+            .find(|card| card.tab_idx == titled_tab)
+            .expect("titled entry should have a card area");
+        assert_eq!(titled.rect.height, 3, "titled entry should occupy three rows");
+
+        // Click the third (title) line — previously this row was not clickable.
+        let title_row = titled.rect.y + titled.rect.height - 1;
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            titled.rect.x + 1,
+            title_row,
+        ));
+
+        assert_eq!(app.state.workspaces[0].active_tab, titled_tab);
+        assert_eq!(
+            app.state.workspaces[0].tabs[titled_tab].layout.focused(),
+            titled_pane
+        );
+    }
+
+    #[test]
+    fn clicking_agent_entry_below_titled_entries_maps_to_correct_pane() {
+        let mut app = app_for_mouse_test();
+        let mut ws = Workspace::test_new("test");
+        let mut tabs = vec![(0usize, ws.tabs[0].root_pane)];
+        for name in ["logs", "review", "ops"] {
+            let tab_idx = ws.test_add_tab(Some(name));
+            tabs.push((tab_idx, ws.tabs[tab_idx].root_pane));
+        }
+        app.state.workspaces = vec![ws];
+        app.state.ensure_test_terminals();
+        // Give the first three entries chat titles, so each is three rows tall.
+        // The old hit-test advanced a fixed two rows per entry, so the title
+        // lines stacked up and every entry below them mapped to the wrong pane.
+        for (idx, (tab_idx, pane_id)) in tabs.iter().enumerate() {
+            let terminal_id = app.state.workspaces[0].tabs[*tab_idx].panes[pane_id]
+                .attached_terminal_id
+                .clone();
+            let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+            if idx < 3 {
+                set_chat_title(terminal, &format!("title {idx}"));
+            } else {
+                terminal.detected_agent = Some(Agent::Pi);
+            }
+        }
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 40));
+
+        let (last_tab, last_pane) = *tabs.last().unwrap();
+        let card = *app
+            .state
+            .view
+            .agent_panel_card_areas
+            .iter()
+            .find(|card| card.tab_idx == last_tab)
+            .expect("entry below the titled ones should have a card area");
+
+        for row in card.rect.y..card.rect.y + card.rect.height {
+            app.state.workspaces[0].active_tab = 0;
+            app.handle_mouse(mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                card.rect.x + 1,
+                row,
+            ));
+            assert_eq!(
+                app.state.workspaces[0].active_tab, last_tab,
+                "clicking row {row} of the last entry should focus its tab"
+            );
+            assert_eq!(
+                app.state.workspaces[0].tabs[last_tab].layout.focused(),
+                last_pane
+            );
+        }
     }
 
     #[test]
