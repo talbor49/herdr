@@ -22,6 +22,14 @@ pub struct WorktreeRemoveResult {
     pub result: Result<(), String>,
 }
 
+#[derive(Debug)]
+pub struct WorktreeSetupResult {
+    pub workspace_id: Option<String>,
+    pub branch: String,
+    pub log_path: std::path::PathBuf,
+    pub result: Result<(), String>,
+}
+
 /// An event from a background task to the main loop.
 #[derive(Debug)]
 pub enum AppEvent {
@@ -125,4 +133,6 @@ pub enum AppEvent {
     WorktreeAddFinished(WorktreeAddResult),
     /// Background `git worktree remove` completed.
     WorktreeRemoveFinished(WorktreeRemoveResult),
+    /// Background `worktrees.setup` command for a new worktree completed.
+    WorktreeSetupFinished(WorktreeSetupResult),
 }

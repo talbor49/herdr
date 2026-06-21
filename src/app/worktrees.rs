@@ -636,6 +636,7 @@ impl App {
                 let source_workspace_id = create.source_workspace_id.clone();
                 let source_checkout_path = create.source_checkout_path.clone();
                 let setup_source = create.source_checkout_path.clone();
+                let setup_branch = create.branch.clone();
                 let source_existing_membership = create.source_existing_membership.clone();
                 let repo_key = create.repo_key.clone();
                 let repo_name = create.repo_name.clone();
@@ -667,12 +668,12 @@ impl App {
                                 key: repo_key,
                                 label: repo_name,
                                 repo_root: source_repo_root,
-                                checkout_path: path,
+                                checkout_path: path.clone(),
                                 is_linked_worktree: true,
                             });
                         }
                         self.state.mark_session_dirty();
-                        self.run_worktree_setup_command(ws_idx, &setup_source);
+                        self.run_worktree_setup_command(ws_idx, path, setup_source, setup_branch);
                     }
                     Err(err) => {
                         self.state.config_diagnostic = Some(format!(
@@ -693,39 +694,115 @@ impl App {
             }
         }
     }
-    /// Run the configured `worktrees.setup` command in a freshly created
-    /// worktree's shell, with `$HERDR_SOURCE_CHECKOUT` set to the checkout it was
-    /// created from (so a setup script can copy/link per-checkout env files).
-    fn run_worktree_setup_command(&self, ws_idx: usize, source_checkout: &std::path::Path) {
+    /// Run the configured `worktrees.setup` command for a freshly created worktree
+    /// as a detached background process (not in the pane), so the new pane is a
+    /// usable shell immediately. `$HERDR_SOURCE_CHECKOUT` is set to the checkout it
+    /// was created from (so a setup script can copy/link per-checkout env files),
+    /// combined output is written to a log file, and a toast reports the outcome.
+    fn run_worktree_setup_command(
+        &mut self,
+        ws_idx: usize,
+        checkout_path: std::path::PathBuf,
+        source_checkout: std::path::PathBuf,
+        branch: String,
+    ) {
         let Some(command) = self
             .state
             .worktree_setup_command
             .as_deref()
             .map(str::trim)
             .filter(|command| !command.is_empty())
+            .map(str::to_string)
         else {
             return;
         };
-        let Some(root_pane) = self
-            .state
-            .workspaces
-            .get(ws_idx)
-            .and_then(|ws| ws.tabs.first())
-            .map(|tab| tab.root_pane)
-        else {
-            return;
-        };
-        let Some(runtime) = self.lookup_runtime_sender(ws_idx, root_pane) else {
-            tracing::warn!(ws_idx, "worktree setup skipped: pane runtime not ready");
-            return;
-        };
-        let input = format!(
-            "HERDR_SOURCE_CHECKOUT='{}' {command}\r",
-            source_checkout.display()
+        let workspace_id = self.state.workspaces.get(ws_idx).map(|ws| ws.id.clone());
+        let log_path = crate::worktree::worktree_setup_log_path(&checkout_path);
+
+        self.show_worktree_setup_toast(
+            crate::app::state::ToastKind::Finished,
+            "setting up worktree".to_string(),
+            branch.clone(),
         );
-        if let Err(err) = runtime.try_send_bytes(bytes::Bytes::from(input)) {
-            tracing::warn!(ws_idx, error = %err, "failed to send worktree setup command");
+
+        let event_tx = self.event_tx.clone();
+        std::thread::spawn(move || {
+            let result = crate::worktree::run_worktree_setup_process(
+                &command,
+                &checkout_path,
+                &source_checkout,
+                &log_path,
+            );
+            let _ = event_tx.blocking_send(AppEvent::WorktreeSetupFinished(
+                crate::events::WorktreeSetupResult {
+                    workspace_id,
+                    branch,
+                    log_path,
+                    result,
+                },
+            ));
+        });
+    }
+
+    pub(crate) fn handle_worktree_setup_finished(
+        &mut self,
+        result: crate::events::WorktreeSetupResult,
+    ) {
+        let workspace_open = result
+            .workspace_id
+            .as_ref()
+            .is_none_or(|id| self.state.workspaces.iter().any(|ws| &ws.id == id));
+
+        match &result.result {
+            Ok(()) => {
+                tracing::info!(branch = %result.branch, "worktree setup completed");
+                if workspace_open {
+                    self.show_worktree_setup_toast(
+                        crate::app::state::ToastKind::Finished,
+                        "worktree ready".to_string(),
+                        result.branch.clone(),
+                    );
+                }
+            }
+            Err(err) => {
+                tracing::warn!(branch = %result.branch, error = %err, log = %result.log_path.display(), "worktree setup failed");
+                self.show_worktree_setup_toast(
+                    crate::app::state::ToastKind::NeedsAttention,
+                    "worktree setup failed".to_string(),
+                    result.branch.clone(),
+                );
+                self.state.config_diagnostic = Some(format!(
+                    "worktree '{}' setup failed: {err} (log: {})",
+                    result.branch,
+                    result.log_path.display()
+                ));
+            }
         }
+        self.render_dirty.store(true, Ordering::Release);
+        self.render_notify.notify_one();
+    }
+
+    fn show_worktree_setup_toast(
+        &mut self,
+        kind: crate::app::state::ToastKind,
+        title: String,
+        context: String,
+    ) {
+        if matches!(
+            self.state.toast_delivery(),
+            crate::config::ToastDelivery::Off
+        ) {
+            return;
+        }
+        let previous_toast = self.state.toast.clone();
+        self.state.toast = Some(crate::app::state::ToastNotification {
+            kind,
+            title,
+            context,
+            position: None,
+            target: None,
+        });
+        self.sync_toast_deadline(previous_toast);
     }
 
     pub(crate) fn handle_worktree_remove_finished(&mut self, result: WorktreeRemoveResult) {
