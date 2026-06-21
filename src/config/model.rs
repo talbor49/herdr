@@ -555,7 +555,7 @@ impl Default for KeysConfig {
             settings: BindingConfig::one("prefix+s"),
             new_workspace: BindingConfig::one("prefix+shift+n"),
             new_worktree: BindingConfig::one("prefix+shift+g"),
-            open_worktree: BindingConfig::empty(),
+            open_worktree: BindingConfig::one("prefix+shift+o"),
             remove_worktree: BindingConfig::empty(),
             rename_workspace: BindingConfig::one("prefix+shift+w"),
             close_workspace: BindingConfig::one("prefix+shift+d"),

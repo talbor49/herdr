@@ -1317,10 +1317,26 @@ next_tab = "prefix+n"
     }
 
     #[test]
-    fn open_and_remove_worktree_keybinds_are_unset_by_default() {
+    fn open_worktree_defaults_to_prefix_shift_o() {
         let kb = Config::default().keybinds();
-        assert!(kb.open_worktree.bindings.is_empty());
+        assert_eq!(
+            binding_triggers(&kb.open_worktree),
+            vec![BindingTrigger::Prefix((
+                KeyCode::Char('o'),
+                KeyModifiers::SHIFT
+            ))]
+        );
+    }
+
+    #[test]
+    fn remove_worktree_keybind_is_unset_by_default() {
+        let kb = Config::default().keybinds();
         assert!(kb.remove_worktree.bindings.is_empty());
+    }
+
+    #[test]
+    fn default_keybinds_have_no_conflicts() {
+        assert!(Config::default().collect_diagnostics().is_empty());
     }
 
     #[test]
