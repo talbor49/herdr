@@ -118,9 +118,17 @@ impl App {
             &checkout_path,
             &branch,
             &base,
+            &crate::worktree::disabled_hooks_dir(),
         );
         if let Err(err) = crate::worktree::run_worktree_command(&command) {
-            return encode_error(id, "worktree_create_failed", err);
+            if !crate::worktree::worktree_checkout_present(&checkout_path) {
+                return encode_error(id, "worktree_create_failed", err);
+            }
+            tracing::warn!(
+                checkout_path = %checkout_path.display(),
+                error = %err,
+                "git worktree add reported failure but the checkout exists; treating as created"
+            );
         }
         if let Err(err) = self.ensure_source_parent_membership(&mut source, true) {
             return encode_error(id, err.code, err.message);

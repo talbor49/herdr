@@ -507,6 +507,7 @@ impl App {
             &create.checkout_path,
             &create.branch,
             "HEAD",
+            &crate::worktree::disabled_hooks_dir(),
         );
         let parent_dir = create
             .checkout_path
@@ -527,6 +528,17 @@ impl App {
                     .and_then(|()| crate::worktree::run_worktree_command(&command))
             } else {
                 crate::worktree::run_worktree_command(&command)
+            };
+            let result = match result {
+                Err(err) if crate::worktree::worktree_checkout_present(&path) => {
+                    tracing::warn!(
+                        checkout_path = %path.display(),
+                        error = %err,
+                        "git worktree add reported failure but the checkout exists; treating as created"
+                    );
+                    Ok(())
+                }
+                other => other,
             };
             let _ = event_tx.blocking_send(AppEvent::WorktreeAddFinished(WorktreeAddResult {
                 path,

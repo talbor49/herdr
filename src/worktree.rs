@@ -225,10 +225,13 @@ pub(crate) fn build_worktree_add_new_branch_command(
     path: &Path,
     branch: &str,
     base: &str,
+    hooks_disabled_dir: &Path,
 ) -> WorktreeCommand {
     WorktreeCommand {
         program: "git".to_string(),
         args: vec![
+            "-c".to_string(),
+            format!("core.hooksPath={}", hooks_disabled_dir.display()),
             "-C".to_string(),
             repo_root.display().to_string(),
             "worktree".to_string(),
@@ -239,6 +242,23 @@ pub(crate) fn build_worktree_add_new_branch_command(
             base.to_string(),
         ],
     }
+}
+
+/// An empty directory used as `core.hooksPath` so `git worktree add` does not run
+/// the repository's checkout hooks. Those hooks (e.g. a `post-checkout` that runs
+/// `mise`) can fail in a brand-new, untrusted worktree and abort an otherwise valid
+/// creation; per-worktree bootstrapping belongs in the `worktrees.setup` command.
+pub(crate) fn disabled_hooks_dir() -> PathBuf {
+    let dir = crate::config::state_dir().join("git-hooks-disabled");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+/// Whether a worktree checkout was actually created at `path`, regardless of the
+/// `git worktree add` exit status (a failing checkout hook can leave a perfectly
+/// valid worktree behind while still reporting non-zero).
+pub(crate) fn worktree_checkout_present(path: &Path) -> bool {
+    path.join(".git").exists()
 }
 
 pub(crate) fn run_worktree_command(command: &WorktreeCommand) -> Result<(), String> {
@@ -650,11 +670,14 @@ prunable stale
             Path::new("/w/herdr/worktree-brave-river"),
             "worktree/brave-river",
             "HEAD",
+            Path::new("/state/herdr/git-hooks-disabled"),
         );
         assert_eq!(command.program, "git");
         assert_eq!(
             command.args,
             vec![
+                "-c",
+                "core.hooksPath=/state/herdr/git-hooks-disabled",
                 "-C",
                 "/repo/herdr",
                 "worktree",
@@ -673,7 +696,13 @@ prunable stale
         let checkout = unique_temp_path("worktree-run-checkout");
         let branch = "worktree/test-create-remove";
 
-        let add = build_worktree_add_new_branch_command(&repo, &checkout, branch, "HEAD");
+        let add = build_worktree_add_new_branch_command(
+            &repo,
+            &checkout,
+            branch,
+            "HEAD",
+            &repo.join(".no-hooks"),
+        );
         run_worktree_command(&add).unwrap();
 
         assert!(checkout.join("README.md").exists());
@@ -695,4 +724,15 @@ prunable stale
 
         let _ = std::fs::remove_dir_all(repo);
     }
+
+    #[test]
+    fn worktree_checkout_present_detects_git_marker() {
+        let checkout = unique_temp_path("worktree-present");
+        std::fs::create_dir_all(&checkout).unwrap();
+        assert!(!worktree_checkout_present(&checkout));
+        std::fs::write(checkout.join(".git"), "gitdir: /somewhere\n").unwrap();
+        assert!(worktree_checkout_present(&checkout));
+        let _ = std::fs::remove_dir_all(checkout);
+    }
+
 }
