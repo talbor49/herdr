@@ -798,7 +798,7 @@ impl App {
             source_checkout.display().to_string(),
         )];
         if self.open_worktree_setup_tab(ws_idx, checkout_path, &argv, extra_env) {
-            self.announce_worktree_setup(ws_idx, &log_path);
+            self.show_worktree_setup_toast();
         }
     }
 
@@ -844,28 +844,24 @@ impl App {
         true
     }
 
-    /// Print one neutral line in the worktree's main pane pointing at the setup log,
-    /// so the running setup is discoverable without scary status popups.
-    fn announce_worktree_setup(&self, ws_idx: usize, log_path: &std::path::Path) {
-        let Some(root_pane) = self
-            .state
-            .workspaces
-            .get(ws_idx)
-            .and_then(|ws| ws.tabs.first())
-            .map(|tab| tab.root_pane)
-        else {
+    /// Show one neutral toast pointing at the running setup tab. No success/failure
+    /// state, so it never reads as scary, and nothing is injected into the shell.
+    fn show_worktree_setup_toast(&mut self) {
+        if matches!(
+            self.state.toast_delivery(),
+            crate::config::ToastDelivery::Off
+        ) {
             return;
-        };
-        let Some(runtime) = self.lookup_runtime_sender(ws_idx, root_pane) else {
-            return;
-        };
-        let input = format!(
-            "printf '%s\\n' 'herdr: worktree setup is running in the \"setup\" tab \u{2014} log: {}'\r",
-            log_path.display()
-        );
-        if let Err(err) = runtime.try_send_bytes(bytes::Bytes::from(input)) {
-            tracing::warn!(ws_idx, error = %err, "failed to print worktree setup notice");
         }
+        let previous_toast = self.state.toast.clone();
+        self.state.toast = Some(crate::app::state::ToastNotification {
+            kind: crate::app::state::ToastKind::Finished,
+            title: "worktree setup".to_string(),
+            context: "running in the \"setup\" tab".to_string(),
+            position: None,
+            target: None,
+        });
+        self.sync_toast_deadline(previous_toast);
     }
 
     pub(crate) fn handle_worktree_remove_finished(&mut self, result: WorktreeRemoveResult) {
