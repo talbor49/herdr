@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Clear, Paragraph},
+    widgets::{Clear, Paragraph, Wrap},
     Frame,
 };
 
@@ -240,32 +240,34 @@ pub(super) fn render_new_linked_worktree_overlay(app: &AppState, frame: &mut Fra
     };
 
     super::dim_background(frame, area);
-    let Some(inner) = render_modal_shell(frame, area, 68, 10, &app.palette) else {
+    let Some(inner) = render_modal_shell(frame, area, 88, 18, &app.palette) else {
         return;
     };
-    if inner.height < 7 {
+    if inner.height < 10 {
         return;
     }
 
     let rows = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Min(0),
+        Constraint::Length(1), // header
+        Constraint::Length(1), // gap
+        Constraint::Length(1), // branch label
+        Constraint::Length(1), // branch input
+        Constraint::Length(1), // gap
+        Constraint::Length(1), // checkout label
+        Constraint::Length(2), // checkout value (wraps)
+        Constraint::Length(1), // gap
+        Constraint::Min(1),    // status / error (wraps)
+        Constraint::Length(1), // buttons
     ])
-    .areas::<8>(inner);
+    .areas::<10>(inner);
 
     render_modal_header(frame, rows[0], "new worktree", &app.palette);
 
     frame.render_widget(
         Paragraph::new(" branch").style(Style::default().fg(app.palette.overlay0)),
-        rows[1],
+        rows[2],
     );
-    let input_rect = Rect::new(rows[2].x, rows[2].y, rows[2].width, 1);
+    let input_rect = Rect::new(rows[3].x, rows[3].y, rows[3].width, 1);
     frame.render_widget(Clear, input_rect);
     frame.render_widget(
         Paragraph::new(format!(" {}█", app.name_input)).style(
@@ -279,22 +281,26 @@ pub(super) fn render_new_linked_worktree_overlay(app: &AppState, frame: &mut Fra
     let checkout = create.checkout_path.display().to_string();
     frame.render_widget(
         Paragraph::new(" checkout").style(Style::default().fg(app.palette.overlay0)),
-        rows[3],
+        rows[5],
     );
     frame.render_widget(
-        Paragraph::new(format!(" {checkout}")).style(Style::default().fg(app.palette.subtext0)),
-        rows[4],
+        Paragraph::new(format!(" {checkout}"))
+            .style(Style::default().fg(app.palette.subtext0))
+            .wrap(Wrap { trim: false }),
+        rows[6],
     );
 
     if create.creating {
         frame.render_widget(
             Paragraph::new(" creating…").style(Style::default().fg(app.palette.overlay0)),
-            rows[5],
+            rows[8],
         );
     } else if let Some(error) = &create.error {
         frame.render_widget(
-            Paragraph::new(format!(" {error}")).style(Style::default().fg(app.palette.red)),
-            rows[5],
+            Paragraph::new(format!(" {error}"))
+                .style(Style::default().fg(app.palette.red))
+                .wrap(Wrap { trim: false }),
+            rows[8],
         );
     }
 
