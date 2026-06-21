@@ -30,14 +30,17 @@ impl UpdateChannelConfig {
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(default)]
 pub struct UpdateConfig {
-    #[serde(default = "default_update_channel")]
     pub channel: UpdateChannelConfig,
+    pub version_check: bool,
+    pub manifest_check: bool,
 }
 
 impl Default for UpdateConfig {
     fn default() -> Self {
         Self {
             channel: default_update_channel(),
+            version_check: true,
+            manifest_check: true,
         }
     }
 }
@@ -84,17 +87,18 @@ pub enum ToastClipboardPosition {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "lowercase")]
-pub enum AgentPanelScopeConfig {
-    Current,
+pub enum AgentPanelSortConfig {
     #[default]
-    All,
+    #[serde(alias = "workspaces")]
+    Spaces,
+    Priority,
 }
 
-impl AgentPanelScopeConfig {
+impl AgentPanelSortConfig {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Current => "current",
-            Self::All => "all",
+            Self::Spaces => "spaces",
+            Self::Priority => "priority",
         }
     }
 }
@@ -336,6 +340,8 @@ pub struct KeysConfig {
     pub next_agent: BindingConfig,
     /// Focus an agent by index 1-9. Unset by default.
     pub focus_agent: BindingConfig,
+    /// Local-client shortcut that sends a clipboard image to a remote Herdr session. Default: "ctrl+v".
+    pub remote_image_paste: String,
     /// Create a new tab in the active workspace. Default: "prefix+c"
     pub new_tab: BindingConfig,
     /// Rename the active tab. Default: "prefix+shift+t".
@@ -444,8 +450,8 @@ pub struct UiConfig {
     pub prompt_new_tab_name: bool,
     /// Show agent labels in split pane borders when no manual pane label is set. Default: false.
     pub show_agent_labels_on_pane_borders: bool,
-    /// Agent sidebar scope. Saved values are "current" or "all". Default: "all".
-    pub agent_panel_scope: AgentPanelScopeConfig,
+    /// Agent sidebar ordering. Saved values are "spaces" or "priority". Default: "spaces".
+    pub agent_panel_sort: AgentPanelSortConfig,
     /// Accent color for highlights, borders, and navigation UI.
     /// Accepts hex (#89b4fa), named colors (cyan, blue), or RGB (rgb(137,180,250)).
     pub accent: String,
@@ -575,6 +581,7 @@ impl Default for KeysConfig {
             previous_agent: BindingConfig::empty(),
             next_agent: BindingConfig::empty(),
             focus_agent: BindingConfig::empty(),
+            remote_image_paste: "ctrl+v".into(),
             new_tab: BindingConfig::one("prefix+c"),
             rename_tab: BindingConfig::one("prefix+shift+t"),
             previous_tab: BindingConfig::one("prefix+p"),
@@ -631,7 +638,7 @@ impl Default for UiConfig {
             confirm_close: true,
             prompt_new_tab_name: true,
             show_agent_labels_on_pane_borders: false,
-            agent_panel_scope: AgentPanelScopeConfig::All,
+            agent_panel_sort: AgentPanelSortConfig::Spaces,
             accent: "cyan".into(),
             toast: ToastConfig::default(),
             sound: SoundConfig::default(),
@@ -729,17 +736,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn update_channel_defaults_for_platform_and_parses() {
+    fn update_config_defaults_and_parses() {
         let default_config = Config::default();
         assert_eq!(default_config.update.channel, default_update_channel());
+        assert!(default_config.update.version_check);
+        assert!(default_config.update.manifest_check);
 
         let toml = r#"
 [update]
 channel = "preview"
+version_check = false
+manifest_check = false
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.update.channel, UpdateChannelConfig::Preview);
         assert_eq!(config.update.channel.as_str(), "preview");
+        assert!(!config.update.version_check);
+        assert!(!config.update.manifest_check);
     }
 
     #[test]
@@ -802,13 +815,32 @@ resume_agents_on_restore = false
     }
 
     #[test]
-    fn agent_panel_scope_config_parses() {
+    fn agent_panel_sort_config_parses_alias_and_defaults() {
+        assert_eq!(
+            Config::default().ui.agent_panel_sort,
+            AgentPanelSortConfig::Spaces
+        );
+
         let toml = r#"
 [ui]
-agent_panel_scope = "all"
+agent_panel_sort = "priority"
 "#;
         let config: Config = toml::from_str(toml).unwrap();
-        assert_eq!(config.ui.agent_panel_scope, AgentPanelScopeConfig::All);
+        assert_eq!(config.ui.agent_panel_sort, AgentPanelSortConfig::Priority);
+
+        let toml = r#"
+[ui]
+agent_panel_sort = "workspaces"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.ui.agent_panel_sort, AgentPanelSortConfig::Spaces);
+
+        let toml = r#"
+[ui]
+agent_panel_scope = "current"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.ui.agent_panel_sort, AgentPanelSortConfig::Spaces);
     }
 
     #[test]

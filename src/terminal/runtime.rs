@@ -440,41 +440,6 @@ fn chat_title_from_osc(osc_title: &str) -> Option<String> {
 }
 
 #[cfg(test)]
-mod chat_title_tests {
-    use super::chat_title_from_osc;
-
-    #[test]
-    fn strips_working_braille_glyph() {
-        assert_eq!(
-            chat_title_from_osc("\u{2810} fix-collector-v2-data-quality").as_deref(),
-            Some("fix-collector-v2-data-quality")
-        );
-    }
-
-    #[test]
-    fn strips_idle_glyph() {
-        assert_eq!(
-            chat_title_from_osc("\u{2733} write-the-docs").as_deref(),
-            Some("write-the-docs")
-        );
-    }
-
-    #[test]
-    fn keeps_plain_ascii_title() {
-        assert_eq!(
-            chat_title_from_osc("plain title").as_deref(),
-            Some("plain title")
-        );
-    }
-
-    #[test]
-    fn blank_or_glyph_only_is_none() {
-        assert_eq!(chat_title_from_osc("   "), None);
-        assert_eq!(chat_title_from_osc("\u{2810} "), None);
-    }
-}
-
-#[cfg(test)]
 impl TerminalRuntime {
     pub(crate) fn test_with_channel(cols: u16, rows: u16) -> (Self, mpsc::Receiver<Bytes>) {
         let (runtime, rx) = crate::pane::PaneRuntime::test_with_channel(cols, rows);
@@ -530,5 +495,40 @@ impl TerminalRuntime {
             channel_capacity,
         );
         (Self(runtime), rx)
+    }
+}
+
+#[cfg(test)]
+mod chat_title_tests {
+    use super::chat_title_from_osc;
+
+    #[test]
+    fn strips_working_braille_glyph() {
+        assert_eq!(
+            chat_title_from_osc("\u{2810} fix-collector-v2-data-quality").as_deref(),
+            Some("fix-collector-v2-data-quality")
+        );
+    }
+
+    #[test]
+    fn strips_idle_glyph() {
+        assert_eq!(
+            chat_title_from_osc("\u{2733} write-the-docs").as_deref(),
+            Some("write-the-docs")
+        );
+    }
+
+    #[test]
+    fn keeps_plain_ascii_title() {
+        assert_eq!(
+            chat_title_from_osc("plain title").as_deref(),
+            Some("plain title")
+        );
+    }
+
+    #[test]
+    fn blank_or_glyph_only_is_none() {
+        assert_eq!(chat_title_from_osc("   "), None);
+        assert_eq!(chat_title_from_osc("\u{2810} "), None);
     }
 }
