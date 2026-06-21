@@ -685,7 +685,6 @@ impl App {
                 let source_workspace_id = create.source_workspace_id.clone();
                 let source_checkout_path = create.source_checkout_path.clone();
                 let setup_source = create.source_checkout_path.clone();
-                let setup_branch = create.branch.clone();
                 let source_existing_membership = create.source_existing_membership.clone();
                 let repo_key = create.repo_key.clone();
                 let repo_name = create.repo_name.clone();
@@ -727,7 +726,7 @@ impl App {
                     if let Some(worktree) = self.worktree_info_for_workspace(ws_idx) {
                         self.emit_worktree_created_event(ws_idx, worktree);
                     }
-                    self.run_worktree_setup_command(ws_idx, path, setup_source, setup_branch);
+                    self.run_worktree_setup_command(ws_idx, path, setup_source);
                 } else {
                     match self.create_workspace_with_options(path.clone(), true) {
                         Ok(ws_idx) => {
@@ -746,12 +745,7 @@ impl App {
                             if let Some(worktree) = self.worktree_info_for_workspace(ws_idx) {
                                 self.emit_worktree_created_event(ws_idx, worktree);
                             }
-                            self.run_worktree_setup_command(
-                                ws_idx,
-                                path,
-                                setup_source,
-                                setup_branch,
-                            );
+                            self.run_worktree_setup_command(ws_idx, path, setup_source);
                         }
                         Err(err) => {
                             self.state.config_diagnostic = Some(format!(
@@ -774,16 +768,15 @@ impl App {
         }
     }
     /// Run the configured `worktrees.setup` command for a freshly created worktree
-    /// as a detached background process (not in the pane), so the new pane is a
-    /// usable shell immediately. `$HERDR_SOURCE_CHECKOUT` is set to the checkout it
-    /// was created from (so a setup script can copy/link per-checkout env files),
-    /// combined output is written to a log file, and a toast reports the outcome.
+    /// in its own background "setup" tab, so the new worktree's main pane is a usable
+    /// shell immediately and the setup output stays visible (and inspectable) without
+    /// scary success/failure popups. `$HERDR_SOURCE_CHECKOUT` is set to the checkout
+    /// it was created from, and combined output is also tee'd to a log file.
     fn run_worktree_setup_command(
         &mut self,
         ws_idx: usize,
         checkout_path: std::path::PathBuf,
         source_checkout: std::path::PathBuf,
-        branch: String,
     ) {
         let Some(command) = self
             .state
@@ -795,93 +788,84 @@ impl App {
         else {
             return;
         };
-        let workspace_id = self.state.workspaces.get(ws_idx).map(|ws| ws.id.clone());
         let log_path = crate::worktree::worktree_setup_log_path(&checkout_path);
-
-        self.show_worktree_setup_toast(
-            crate::app::state::ToastKind::Finished,
-            "setting up worktree".to_string(),
-            branch.clone(),
-        );
-
-        let event_tx = self.event_tx.clone();
-        std::thread::spawn(move || {
-            let result = crate::worktree::run_worktree_setup_process(
-                &command,
-                &checkout_path,
-                &source_checkout,
-                &log_path,
-            );
-            let _ = event_tx.blocking_send(AppEvent::WorktreeSetupFinished(
-                crate::events::WorktreeSetupResult {
-                    workspace_id,
-                    branch,
-                    log_path,
-                    result,
-                },
-            ));
-        });
-    }
-
-    pub(crate) fn handle_worktree_setup_finished(
-        &mut self,
-        result: crate::events::WorktreeSetupResult,
-    ) {
-        let workspace_open = result
-            .workspace_id
-            .as_ref()
-            .is_none_or(|id| self.state.workspaces.iter().any(|ws| &ws.id == id));
-
-        match &result.result {
-            Ok(()) => {
-                tracing::info!(branch = %result.branch, "worktree setup completed");
-                if workspace_open {
-                    self.show_worktree_setup_toast(
-                        crate::app::state::ToastKind::Finished,
-                        "worktree ready".to_string(),
-                        result.branch.clone(),
-                    );
-                }
-            }
-            Err(err) => {
-                tracing::warn!(branch = %result.branch, error = %err, log = %result.log_path.display(), "worktree setup failed");
-                self.show_worktree_setup_toast(
-                    crate::app::state::ToastKind::NeedsAttention,
-                    "worktree setup failed".to_string(),
-                    result.branch.clone(),
-                );
-                self.state.config_diagnostic = Some(format!(
-                    "worktree '{}' setup failed: {err} (log: {})",
-                    result.branch,
-                    result.log_path.display()
-                ));
-            }
+        if let Some(parent) = log_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
         }
-        self.render_dirty.store(true, Ordering::Release);
-        self.render_notify.notify_one();
+        let argv = crate::worktree::build_setup_tab_argv(&command, &log_path);
+        let extra_env = vec![(
+            "HERDR_SOURCE_CHECKOUT".to_string(),
+            source_checkout.display().to_string(),
+        )];
+        if self.open_worktree_setup_tab(ws_idx, checkout_path, &argv, extra_env) {
+            self.announce_worktree_setup(ws_idx, &log_path);
+        }
     }
 
-    fn show_worktree_setup_toast(
+    /// Open an unfocused "setup" tab running `argv` in the worktree. The tab shows
+    /// live output and auto-closes when the command finishes (the log file keeps the
+    /// record). Returns whether the tab was opened.
+    fn open_worktree_setup_tab(
         &mut self,
-        kind: crate::app::state::ToastKind,
-        title: String,
-        context: String,
-    ) {
-        if matches!(
-            self.state.toast_delivery(),
-            crate::config::ToastDelivery::Off
+        ws_idx: usize,
+        cwd: std::path::PathBuf,
+        argv: &[String],
+        extra_env: Vec<(String, String)>,
+    ) -> bool {
+        if ws_idx >= self.state.workspaces.len() {
+            return false;
+        }
+        let (rows, cols) = self.state.estimate_pane_size();
+        let ws = &mut self.state.workspaces[ws_idx];
+        let (tab_idx, terminal, runtime) = match ws.create_tab_argv_command(
+            rows,
+            cols,
+            cwd,
+            argv,
+            extra_env,
+            self.state.pane_scrollback_limit_bytes,
+            self.state.host_terminal_theme,
         ) {
-            return;
+            Ok(result) => result,
+            Err(err) => {
+                tracing::warn!(ws_idx, error = %err, "failed to open worktree setup tab");
+                return false;
+            }
+        };
+        if let Some(tab) = ws.tabs.get_mut(tab_idx) {
+            tab.set_custom_name("setup".to_string());
         }
-        let previous_toast = self.state.toast.clone();
-        self.state.toast = Some(crate::app::state::ToastNotification {
-            kind,
-            title,
-            context,
-            position: None,
-            target: None,
-        });
-        self.sync_toast_deadline(previous_toast);
+        let root_pane = ws.tabs[tab_idx].root_pane;
+        self.terminal_runtimes.insert(terminal.id.clone(), runtime);
+        self.state.terminals.insert(terminal.id.clone(), terminal);
+        self.state.remove_alias_shadowed_by_new_pane(root_pane);
+        self.emit_tab_created_events(ws_idx, tab_idx);
+        self.schedule_session_save();
+        true
+    }
+
+    /// Print one neutral line in the worktree's main pane pointing at the setup log,
+    /// so the running setup is discoverable without scary status popups.
+    fn announce_worktree_setup(&self, ws_idx: usize, log_path: &std::path::Path) {
+        let Some(root_pane) = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.tabs.first())
+            .map(|tab| tab.root_pane)
+        else {
+            return;
+        };
+        let Some(runtime) = self.lookup_runtime_sender(ws_idx, root_pane) else {
+            return;
+        };
+        let input = format!(
+            "printf '%s\\n' 'herdr: worktree setup is running in the \"setup\" tab \u{2014} log: {}'\r",
+            log_path.display()
+        );
+        if let Err(err) = runtime.try_send_bytes(bytes::Bytes::from(input)) {
+            tracing::warn!(ws_idx, error = %err, "failed to print worktree setup notice");
+        }
     }
 
     pub(crate) fn handle_worktree_remove_finished(&mut self, result: WorktreeRemoveResult) {

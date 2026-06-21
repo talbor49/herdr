@@ -278,70 +278,27 @@ pub(crate) fn worktree_setup_log_path(checkout_path: &Path) -> PathBuf {
         .join(format!("{slug}.log"))
 }
 
-/// Run the configured `worktrees.setup` command as a detached shell process in the
-/// new worktree, capturing combined stdout/stderr to `log_path`.
-pub(crate) fn run_worktree_setup_process(
-    command: &str,
-    checkout_path: &Path,
-    source_checkout: &Path,
-    log_path: &Path,
-) -> Result<(), String> {
-    use std::io::Write;
-
-    if let Some(parent) = log_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
-    }
-    let mut log = std::fs::File::create(log_path).map_err(|err| err.to_string())?;
-    let _ = writeln!(
-        log,
-        "$ cd {}\n$ HERDR_SOURCE_CHECKOUT={} {command}\n",
-        checkout_path.display(),
-        source_checkout.display()
-    );
-    let log_out = log.try_clone().map_err(|err| err.to_string())?;
-    let log_err = log.try_clone().map_err(|err| err.to_string())?;
-
-    let status = build_setup_shell_command(command)
-        .current_dir(checkout_path)
-        .env("HERDR_SOURCE_CHECKOUT", source_checkout)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::from(log_out))
-        .stderr(std::process::Stdio::from(log_err))
-        .status()
-        .map_err(|err| err.to_string())?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        Err(match status.code() {
-            Some(code) => format!("setup command exited with status {code} (see log)"),
-            None => "setup command terminated by signal (see log)".to_string(),
-        })
-    }
-}
-
+/// Build the argv for a worktree's "setup" tab. The command runs in a login shell so
+/// the user's profile (and e.g. `mise` activation) is in scope, with its combined
+/// output shown live in the tab and tee'd to `log_path` (Unix). The pane's cwd and
+/// `$HERDR_SOURCE_CHECKOUT` are set by the caller via the tab launch env.
 #[cfg(not(windows))]
-fn build_setup_shell_command(command: &str) -> std::process::Command {
+pub(crate) fn build_setup_tab_argv(command: &str, log_path: &Path) -> Vec<String> {
     let shell = std::env::var("SHELL")
         .ok()
         .filter(|shell| !shell.trim().is_empty())
         .unwrap_or_else(|| "/bin/sh".to_string());
-    let mut process = std::process::Command::new(shell);
-    // Login shell so the user's profile (and e.g. `mise` activation) is in scope,
-    // matching the interactive pane environment the command used to run in.
-    process.arg("-l").arg("-c").arg(command);
-    process
+    let inner = format!("{{ {command} ; }} 2>&1 | tee '{}'", log_path.display());
+    vec![shell, "-l".to_string(), "-c".to_string(), inner]
 }
 
 #[cfg(windows)]
-fn build_setup_shell_command(command: &str) -> std::process::Command {
+pub(crate) fn build_setup_tab_argv(command: &str, _log_path: &Path) -> Vec<String> {
     let shell = std::env::var("ComSpec")
         .ok()
         .filter(|shell| !shell.trim().is_empty())
         .unwrap_or_else(|| "cmd.exe".to_string());
-    let mut process = std::process::Command::new(shell);
-    process.arg("/C").arg(command);
-    process
+    vec![shell, "/C".to_string(), command.to_string()]
 }
 
 pub(crate) fn run_worktree_command(command: &WorktreeCommand) -> Result<(), String> {
@@ -903,29 +860,16 @@ prunable stale
 
     #[cfg(not(windows))]
     #[test]
-    fn run_worktree_setup_process_logs_output_and_reports_status() {
-        let checkout = unique_temp_path("worktree-setup-ok");
-        let source = unique_temp_path("worktree-setup-src");
-        std::fs::create_dir_all(&checkout).unwrap();
-        let log_path = unique_temp_path("worktree-setup-ok-log").join("setup.log");
-
-        let ok = run_worktree_setup_process(
-            "echo hello from $HERDR_SOURCE_CHECKOUT; pwd",
-            &checkout,
-            &source,
-            &log_path,
+    fn build_setup_tab_argv_wraps_command_in_login_shell_with_tee() {
+        let argv = build_setup_tab_argv(
+            "mise trust && mise install",
+            Path::new("/state/herdr/worktree-setup/feature.log"),
         );
-        assert!(ok.is_ok());
-        let log = std::fs::read_to_string(&log_path).unwrap();
-        assert!(log.contains("hello from"));
-        assert!(log.contains(&source.display().to_string()));
-
-        let err = run_worktree_setup_process("exit 3", &checkout, &source, &log_path);
-        assert!(err.is_err());
-        assert!(err.unwrap_err().contains("status 3"));
-
-        let _ = std::fs::remove_dir_all(checkout);
-        let _ = std::fs::remove_dir_all(log_path.parent().unwrap());
+        assert_eq!(argv.len(), 4);
+        assert_eq!(argv[1], "-l");
+        assert_eq!(argv[2], "-c");
+        assert!(argv[3].contains("mise trust && mise install"));
+        assert!(argv[3].contains("tee '/state/herdr/worktree-setup/feature.log'"));
     }
 
     #[test]
