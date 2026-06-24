@@ -301,6 +301,69 @@ pub(crate) fn build_setup_tab_argv(command: &str, _log_path: &Path) -> Vec<Strin
     vec![shell, "/C".to_string(), command.to_string()]
 }
 
+pub(crate) fn build_worktree_add_existing_branch_command(
+    repo_root: &Path,
+    path: &Path,
+    branch: &str,
+    hooks_disabled_dir: &Path,
+) -> WorktreeCommand {
+    WorktreeCommand {
+        program: "git".to_string(),
+        args: vec![
+            "-c".to_string(),
+            format!("core.hooksPath={}", hooks_disabled_dir.display()),
+            "-C".to_string(),
+            repo_root.display().to_string(),
+            "worktree".to_string(),
+            "add".to_string(),
+            path.display().to_string(),
+            branch.to_string(),
+        ],
+    }
+}
+
+pub(crate) fn local_branch_exists(repo_root: &Path, branch: &str) -> Result<bool, String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["show-ref", "--verify", "--quiet"])
+        .arg(format!("refs/heads/{branch}"))
+        .output()
+        .map_err(|err| err.to_string())?;
+
+    if output.status.success() {
+        return Ok(true);
+    }
+    if output.status.code() == Some(1) {
+        return Ok(false);
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !stderr.is_empty() {
+        Err(stderr)
+    } else if !stdout.is_empty() {
+        Err(stdout)
+    } else {
+        Err(format!("git show-ref failed with status {}", output.status))
+    }
+}
+
+pub(crate) fn run_worktree_add_command(
+    repo_root: &Path,
+    path: &Path,
+    branch: &str,
+    base: &str,
+) -> Result<(), String> {
+    let hooks_disabled_dir = disabled_hooks_dir();
+    let command = if local_branch_exists(repo_root, branch)? {
+        build_worktree_add_existing_branch_command(repo_root, path, branch, &hooks_disabled_dir)
+    } else {
+        build_worktree_add_new_branch_command(repo_root, path, branch, base, &hooks_disabled_dir)
+    };
+    run_worktree_command(&command)
+}
+
 pub(crate) fn run_worktree_command(command: &WorktreeCommand) -> Result<(), String> {
     let output = std::process::Command::new(&command.program)
         .args(&command.args)
@@ -809,6 +872,30 @@ prunable stale
                 "worktree/brave-river",
                 "/w/herdr/worktree-brave-river",
                 "HEAD"
+            ]
+        );
+    }
+
+    #[test]
+    fn worktree_add_command_checks_out_existing_branch() {
+        let command = build_worktree_add_existing_branch_command(
+            Path::new("/repo/herdr"),
+            Path::new("/w/herdr/worktree-brave-river"),
+            "worktree/brave-river",
+            Path::new("/state/herdr/git-hooks-disabled"),
+        );
+        assert_eq!(command.program, "git");
+        assert_eq!(
+            command.args,
+            vec![
+                "-c",
+                "core.hooksPath=/state/herdr/git-hooks-disabled",
+                "-C",
+                "/repo/herdr",
+                "worktree",
+                "add",
+                "/w/herdr/worktree-brave-river",
+                "worktree/brave-river"
             ]
         );
     }
