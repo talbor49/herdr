@@ -109,7 +109,7 @@ fn git_dirty_count(cwd: &Path) -> Option<usize> {
     let output = std::process::Command::new("git")
         .arg("-C")
         .arg(cwd)
-        .args(["status", "--porcelain"])
+        .args(["--no-optional-locks", "status", "--porcelain"])
         .output()
         .ok()?;
     if !output.status.success() {
