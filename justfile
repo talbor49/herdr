@@ -3,7 +3,8 @@
 # Run tests
 test:
     cargo nextest run --locked --status-level fail --final-status-level fail --failure-output final --success-output never
-    python3 -m unittest scripts.test_agent_detection_manifest_check scripts.test_changelog scripts.test_preview scripts.test_vendor_libghostty_vt scripts.test_vendor_portable_pty
+    python3 -m unittest scripts.test_agent_detection_manifest_check scripts.test_changelog scripts.test_docs_translation_parity scripts.test_preview scripts.test_vendor_libghostty_vt scripts.test_vendor_portable_pty
+    just integration-assets-test
     just plugin-marketplace-test
 
 # Run one nextest filter, e.g. `just test-one codex_stale_working`
@@ -18,6 +19,7 @@ lint:
 # Run PR CI checks
 ci filter='all()': lint
     cargo nextest run --locked -E "{{filter}}" --status-level fail --final-status-level slow --failure-output final --success-output never
+    just integration-assets-test
     just plugin-marketplace-test
 
 # Run Windows target lint from Unix/macOS to catch cfg(windows) compile and clippy failures before CI
@@ -27,7 +29,7 @@ windows-lint:
 
 # Check formatting + run unit tests + Windows target lint + maintenance script tests
 check: ci windows-lint
-    python3 -m unittest scripts.test_agent_detection_manifest_check scripts.test_changelog scripts.test_preview scripts.test_vendor_libghostty_vt scripts.test_vendor_portable_pty
+    python3 -m unittest scripts.test_agent_detection_manifest_check scripts.test_changelog scripts.test_docs_translation_parity scripts.test_preview scripts.test_vendor_libghostty_vt scripts.test_vendor_portable_pty
     @echo "docs reminder: if this changes user-facing behavior, make sure the relevant release docs are updated or called out before release."
 
 # Install repo-local git hooks
@@ -44,6 +46,10 @@ build:
 # Build the website and documentation
 website-build:
     cd website && bun install --frozen-lockfile && bun run build
+
+# Test bundled agent integration assets
+integration-assets-test:
+    bun test src/integration/assets/herdr-agent-state.test.ts
 
 # Run plugin marketplace Worker tests
 plugin-marketplace-test:
@@ -87,6 +93,23 @@ release-docs-check:
             exit 1; \
         fi; \
     done
+    @for file in website/src/content/docs/*.mdx; do \
+        for locale in ja zh-cn; do \
+            translated="website/src/content/docs/$locale/$(basename "$file")"; \
+            if [ ! -f "$translated" ]; then \
+                echo "error: $translated is missing; translate stable docs before releasing"; \
+                exit 1; \
+            fi; \
+        done; \
+    done
+    @for file in website/src/content/docs/ja/*.mdx website/src/content/docs/zh-cn/*.mdx; do \
+        released="website/src/content/docs/$(basename "$file")"; \
+        if [ ! -f "$released" ]; then \
+            echo "error: $file has no matching english doc; remove the stale translation"; \
+            exit 1; \
+        fi; \
+    done
+    python3 scripts/docs_translation_parity.py --docs-root website/src/content/docs
 
 # Prepare the release commit without tagging or pushing (usage: just release-prepare 0.1.1)
 release-prepare version:
