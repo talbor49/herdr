@@ -82,6 +82,14 @@ sides — this is essential for understanding intent (configure once:
 git merge upstream/master --no-edit
 ```
 
+**Clean auto-merge is common** (e.g. the 23-commit sync where local and upstream
+changes touched disjoint regions). When `git merge` reports **zero conflicts**, it
+**auto-creates the merge commit with git's generic default message**
+("Merge remote-tracking branch 'upstream/master'…"). Don't skip validation just
+because there were no conflicts — a clean *textual* merge can still break the build
+via cross-file ripple (see Conflict patterns). And plan to **amend that auto-commit
+to a descriptive one-liner** (step 7) before pushing.
+
 ### 5. Resolve conflicts (see "Conflict patterns" below)
 
 ```bash
@@ -93,33 +101,81 @@ Resolve, then `git add <file>` each one. Verify no markers survive before buildi
 
 ### 6. Validate
 
+Run these in order — stop and fix at the first real failure:
+
 ```bash
-cargo check --all-targets          # fast compile gate — catches missing struct fields, signature drift
-just test                          # cargo nextest + maintenance scripts
-# if nextest isn't installed: cargo test --bin herdr --locked
-#   plus: python3 -m unittest scripts.test_agent_detection_manifest_check scripts.test_changelog scripts.test_preview scripts.test_vendor_libghostty_vt
-cargo fmt                          # then re-run; just check's fmt step is strict
+cargo check --all-targets                        # fast compile gate — missing struct fields, signature drift
+just test                                        # nextest + Python maintenance tests (+ bun tests, see below)
+cargo fmt --check                                # just check's fmt step is strict; `cargo fmt` to fix, then re-check
+cargo clippy --all-targets --locked -- -D warnings   # native strict lint
+just windows-lint                                # Windows-target clippy; run when the merge touched src/platform/windows.rs or src/remote/
 ```
 
-On clippy: `just check` runs `clippy --all-targets -- -D warnings`, which is
-stricter than upstream's CI. If you hit a wall of `uninlined_format_args`/style
-errors, check whether the flagged files are **byte-identical to upstream**
-(`git diff upstream/master -- <file>` is empty). If so they pre-date the merge —
-don't churn unrelated upstream files to satisfy a stricter local clippy. Only fix
-lints in code the merge actually touched, and say so to the user.
+`just windows-lint` needs the `x86_64-pc-windows-msvc` target; the recipe
+`rustup target add`s it automatically. On a fresh machine the first run downloads
+the target and takes a while.
+
+**The `bun` tooling gap (expected on this machine).** `just test` runs, after the
+Rust + Python tests, `just integration-assets-test` and `just plugin-marketplace-test`,
+which both shell out to `bun test`. `bun` is **not installed here** (node/npm are),
+so those two steps fail with `sh: bun: command not found` / exit 127. That is a
+**local tooling gap, not a merge regression** — report it as "not run", don't treat
+it as a failure. The real signal from `just test` is the part that runs first:
+`2595 tests run: … passed` (nextest) and the Python `unittest` block `OK`. If the
+merge touched a bundled TS integration asset (e.g. `src/integration/assets/…`), say
+so and note the TS test couldn't be exercised locally — the Rust
+`src/integration/tests.rs` still gives real coverage.
+
+If nextest is somehow unavailable, the fallback is
+`cargo test --bin herdr --locked` plus the current Python maintenance suite:
+`python3 -m unittest scripts.test_agent_detection_manifest_check scripts.test_changelog scripts.test_docs_translation_parity scripts.test_preview scripts.test_vendor_libghostty_vt scripts.test_vendor_portable_pty`
+(the exact list lives in the `test:` recipe in `justfile` — read it rather than
+trusting this from memory; it grows over time).
+
+On clippy: `clippy --all-targets -- -D warnings` is stricter than upstream's CI. If
+you hit a wall of `uninlined_format_args`/style errors, check whether the flagged
+files are **byte-identical to upstream** (`git diff upstream/master -- <file>` is
+empty). If so they pre-date the merge — don't churn unrelated upstream files to
+satisfy a stricter local clippy. Only fix lints in code the merge actually touched,
+and say so to the user.
 
 ### 7. Commit (propose the message first)
 
 Per `CLAUDE.md`, propose the commit message and get alignment before committing.
-Don't push unless the user explicitly asks — and confirm whether they want
-`master` and/or the working branch pushed (origin may need SSH auth fixed first).
 
-One-line, lowercase, conventional-ish, describing what was integrated and what
-local features were preserved, e.g.:
+If the merge **auto-committed** (clean, no conflicts), the commit already exists
+with git's default message — **amend it** to the descriptive one-liner rather than
+adding a second commit:
+
+```bash
+git commit --amend -m "merge upstream/master: <upstream highlights>; <what local work was preserved>"
+```
+
+If you resolved conflicts, `git add` the resolved files and `git commit` normally.
+
+Either way the subject is one line, lowercase, conventional-ish, describing what was
+integrated and what local features were preserved, e.g.:
 
 ```
 merge upstream/master: adopt <upstream change>; keep <local features>
 ```
+
+Don't push unless the user explicitly asks — and confirm whether they want `master`
+and/or the working branch pushed (origin may need SSH auth fixed first). Push the
+working branch with `git push origin <branch>`.
+
+### 8. Install the updated binary
+
+After validation passes and the merge is committed, reinstall so the local `herdr`
+binary reflects the merged tree:
+
+```bash
+cargo install --path .
+```
+
+On this macOS 27 machine the vendored libghostty-vt build works through the `zig`
+wrapper under `~/.local` (see the `herdr-macos27-zig-build` memory) — no env var
+needed, `cargo install` finds `zig` on PATH.
 
 ## Conflict patterns (the ones that actually come up here)
 
@@ -179,3 +235,9 @@ sidebar/dialog UI — areas both sides iterate on.
 - **Stray files**: don't `touch` source files to bust clippy's cache — it creates
   untracked files (e.g. an empty `src/lib.rs`) that can sneak into the commit.
   Use `cargo clean -p herdr` or just accept the cache if you only need a summary.
+
+- **Pinned toolchain**: upstream ships a `rust-toolchain.toml` (currently
+  `channel = "1.96.1"`). After fetching, glance at it (`cat rust-toolchain.toml`);
+  if the pin moved, `rustup` auto-installs the channel on the next cargo command.
+  The local macOS-27 zig build setup is independent of the Rust channel and keeps
+  working.
