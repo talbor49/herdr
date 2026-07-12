@@ -2669,6 +2669,27 @@ impl PaneRuntime {
             None
         }
     }
+
+    /// cwd of the pane's foreground process-group leader only. Unlike
+    /// [`foreground_cwd`], this never falls back to scanning other group members,
+    /// so unrelated subprocesses (e.g. a language server chdir'd into its install
+    /// dir) can't hijack the directory used to seed a newly split pane.
+    pub fn foreground_leader_cwd(&self) -> Option<std::path::PathBuf> {
+        #[cfg(unix)]
+        {
+            let pid = self.child_pid.load(Ordering::Acquire);
+            let foreground_pgid = self
+                .io
+                .foreground_process_group_id()
+                .or_else(|| crate::platform::foreground_process_group_id(pid));
+            foreground_pgid.and_then(usable_process_cwd)
+        }
+
+        #[cfg(not(unix))]
+        {
+            None
+        }
+    }
 }
 
 #[cfg(test)]

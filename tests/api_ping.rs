@@ -848,6 +848,79 @@ fn pane_info_reports_foreground_cwd_without_changing_pane_cwd() {
     cleanup_spawned_herdr(child, base);
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn split_follows_foreground_leader_cwd_not_unrelated_group_member() {
+    let _lock = test_lock();
+    let base = unique_test_dir();
+    let member_dir = base.join("language-server");
+    let member_ready = base.join("member-ready");
+    let leader_ready = base.join("leader-ready");
+    fs::create_dir_all(&member_dir).unwrap();
+    let config_home = base.join("config");
+    let runtime_dir = base.join("runtime");
+    let socket_path = runtime_dir.join("herdr.sock");
+
+    let child = spawn_herdr_with_shell(&config_home, &runtime_dir, &socket_path, "/bin/bash");
+    wait_for_socket(&socket_path, Duration::from_secs(5));
+
+    let created = send_request(
+        &socket_path,
+        &format!(
+            r#"{{"id":"lm_ws","method":"workspace.create","params":{{"cwd":"{}","focus":true}}}}"#,
+            base.display()
+        ),
+    );
+    let pane_id = created["result"]["root_pane"]["pane_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let command = format!(
+        "/bin/sh -c '(cd {} && touch {} && sleep 30) & touch {} && sleep 30'",
+        member_dir.display(),
+        member_ready.display(),
+        leader_ready.display()
+    );
+    let send_text = send_request(
+        &socket_path,
+        &serde_json::json!({
+            "id": "lm_send",
+            "method": "pane.send_text",
+            "params": { "pane_id": pane_id, "text": command },
+        })
+        .to_string(),
+    );
+    assert_eq!(send_text["result"]["type"], "ok");
+    let send_enter = send_request(
+        &socket_path,
+        &format!(
+            r#"{{"id":"lm_enter","method":"pane.send_keys","params":{{"pane_id":"{}","keys":["Enter"]}}}}"#,
+            pane_id
+        ),
+    );
+    assert_eq!(send_enter["result"]["type"], "ok");
+    wait_for_path(&member_ready, Duration::from_secs(5));
+    wait_for_path(&leader_ready, Duration::from_secs(5));
+
+    let split = send_request(
+        &socket_path,
+        &serde_json::json!({
+            "id": "lm_split",
+            "method": "pane.split",
+            "params": { "target_pane_id": pane_id, "direction": "right", "focus": false },
+        })
+        .to_string(),
+    );
+    assert_eq!(
+        split["result"]["pane"]["cwd"],
+        base.display().to_string(),
+        "split should follow the foreground leader cwd, not a group member that chdir'd away"
+    );
+
+    cleanup_spawned_herdr(child, base);
+}
+
 #[cfg(not(target_os = "macos"))]
 #[test]
 fn agent_start_creates_named_terminal_over_socket() {

@@ -569,13 +569,24 @@ impl Tab {
             .and_then(|rt| rt.foreground_cwd())
     }
 
+    pub fn foreground_leader_cwd_for_pane(
+        &self,
+        pane_id: PaneId,
+        terminal_runtimes: &TerminalRuntimeRegistry,
+    ) -> Option<PathBuf> {
+        let terminal_id = self.terminal_id(pane_id)?;
+        terminal_runtimes
+            .get(terminal_id)
+            .and_then(|rt| rt.foreground_leader_cwd())
+    }
+
     pub fn follow_cwd_for_pane(
         &self,
         pane_id: PaneId,
         terminals: &HashMap<TerminalId, TerminalState>,
         terminal_runtimes: &TerminalRuntimeRegistry,
     ) -> Option<PathBuf> {
-        self.foreground_cwd_for_pane(pane_id, terminal_runtimes)
+        self.foreground_leader_cwd_for_pane(pane_id, terminal_runtimes)
             .or_else(|| self.cwd_for_pane(pane_id, terminals, terminal_runtimes))
     }
 }

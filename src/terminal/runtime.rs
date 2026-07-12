@@ -445,6 +445,10 @@ impl TerminalRuntime {
         self.0.foreground_cwd()
     }
 
+    pub fn foreground_leader_cwd(&self) -> Option<std::path::PathBuf> {
+        self.0.foreground_leader_cwd()
+    }
+
     pub fn child_pid(&self) -> Option<u32> {
         self.0.child_pid()
     }
