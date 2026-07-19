@@ -101,6 +101,10 @@ pub enum ResponseResult {
         agent: AgentInfo,
         argv: Vec<String>,
     },
+    AgentPrompted {
+        agent: AgentInfo,
+        baseline_state_change_seq: u64,
+    },
     AgentList {
         agents: Vec<AgentInfo>,
     },
@@ -151,6 +155,10 @@ pub enum ResponseResult {
     },
     PaneRead {
         read: PaneReadResult,
+    },
+    PaneGraphicsInfo {
+        cell_width_px: u32,
+        cell_height_px: u32,
     },
     AgentExplain {
         explain: serde_json::Value,

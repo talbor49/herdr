@@ -116,6 +116,7 @@ herdr workspace create [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [
 herdr workspace get <workspace_id>
 herdr workspace focus <workspace_id>
 herdr workspace rename <workspace_id> <label>
+herdr workspace report-metadata <workspace_id> --source ID [--token NAME=VALUE] [--clear-token NAME] [--seq N] [--ttl-ms N]
 herdr workspace close <workspace_id>
 ```
 
@@ -190,7 +191,7 @@ herdr pane run <pane_id> <command>
 
 `<key>` 使用 Herdr 的组合键语法: `a` 这类普通可打印键,`enter`、`tab`、`esc`、`backspace`、`left`、`right`、`up`、`down` 这类特殊键,`ctrl+h`、`control+j`、`alt+x`、`shift+tab` 这类修饰组合键,`f1` 这类功能键,以及 `minus`、`plus`、`backtick` 这类命名标点。旧式的 `C-c` 和 `c-c` 作为 `ctrl+c` 的别名被接受。
 
-`pane run` 把文本和回车作为一个原子操作提交。发送命令时优先用它,而不是 `send-text` 加 `send-keys Enter`。
+`pane run` 会遵循当前的 bracketed paste 模式,并把文本和 Enter 作为一个原子操作提交。发送命令时优先用它,而不是 `send-text` 加 `send-keys Enter`;单独的发送操作仍是底层操作,不会提交命令。
 
 从自定义钩子上报智能体状态:
 
@@ -200,7 +201,6 @@ herdr pane report-agent <pane_id> \
   --agent LABEL \
   --state idle|working|blocked|unknown \
   [--message TEXT] \
-  [--custom-status TEXT] \
   [--seq N] \
   [--agent-session-id ID] \
   [--agent-session-path PATH]
@@ -219,18 +219,21 @@ herdr pane report-metadata <pane_id> \
   [--applies-to-source ID] \
   [--title TEXT|--clear-title] \
   [--display-agent TEXT|--clear-display-agent] \
-  [--custom-status TEXT|--clear-custom-status] \
   [--state-label STATUS=TEXT] \
   [--clear-state-labels] \
+  [--token NAME=VALUE] \
+  [--clear-token NAME] \
   [--seq N] \
   [--ttl-ms N]
 ```
 
-`STATUS` 是 `idle`、`working`、`blocked`、`done` 或 `unknown` 之一。`--agent` 是对权威智能体标签的守卫。`--applies-to-source` 是对活动生命周期权威来源的守卫。用 `--display-agent` 修改可见名称。
+`STATUS` 是 `idle`、`working`、`blocked`、`done` 或 `unknown` 之一。`--agent` 和 `--applies-to-source` 只守卫 `--title`、`--display-agent` 和 `--state-label`,不守卫令牌补丁。上报方负责清除令牌或刷新 TTL。用 `--display-agent` 修改可见名称。
 
-元数据文本在存储前会被规范化。Herdr 去掉首尾空白、移除控制字符、把 `--custom-status` 截断到 32 个字符,把 `--title`、`--display-agent` 和每个 `--state-label` 的值截断到 80 个字符。规范化后为空的值被忽略。
+元数据文本在存储前会被规范化。Herdr 去掉首尾空白、移除控制字符,并把 `--title`、`--display-agent`、每个 `--state-label` 和令牌值截断到 80 个字符。规范化后为空的令牌值会清除该键。
 
-`--source` 和 `--applies-to-source` 必须不超过 80 个字符,并且只能包含 ASCII 字母、数字、冒号、点、下划线和连字符。`--ttl-ms` 让元数据自动过期,取值必须在 `1` 到 `86400000` 毫秒之间。想让元数据一直保留到被替换、清除或窗格关闭时,省略它。`--seq` 让 Herdr 忽略来自同一 `--source` 的过期上报;过期上报会被 API 接受,但被窗格状态忽略。
+`--token` 设置一个命名展示值,`--clear-token` 删除一个值。未提及的令牌保持不变。窗格令牌可在智能体侧边栏行中写成 `$name`;工作区令牌可用于空间行。TTL 分别应用于该次调用更新的每个令牌键。
+
+`--source` 和 `--applies-to-source` 必须不超过 80 个字符,并且只能包含 ASCII 字母、数字、冒号、点、下划线和连字符。`--ttl-ms` 让元数据自动过期,取值必须在 `1` 到 `86400000` 毫秒之间。想让元数据一直保留到被替换、清除或窗格或工作区关闭时,省略它。`--seq` 让 Herdr 忽略来自同一 `--source` 的过期上报;过期上报会被 API 接受,但被窗格状态忽略。每个窗格或工作区在其生命周期内最多接受来自 32 个不同来源的带序号令牌上报,清除或过期不会释放这些来源名额。
 
 ## 智能体
 
@@ -239,18 +242,21 @@ herdr agent list
 herdr agent get <target>
 herdr agent read <target> [--source visible|recent|recent-unwrapped|detection] [--lines N] [--format text|ansi] [--ansi]
 herdr agent send <target> <text>
+herdr agent prompt <name> <text> [--wait] [--timeout MS]
 herdr agent rename <target> <name>|--clear
 herdr agent focus <target>
-herdr agent wait <target> --status <idle|working|blocked|unknown> [--timeout MS]
+herdr agent wait <name> [--timeout MS]
 herdr agent attach <target> [--takeover]
-herdr agent start <name> [--cwd PATH] [--workspace ID] [--tab ID] [--split right|down] [--env KEY=VALUE] [--focus|--no-focus] -- <argv...>
+herdr agent start <name> --kind KIND --pane ID [--timeout MS] [-- <agent-args...>]
 herdr agent explain <target> [--json|--verbose]
 herdr agent explain --file PATH --agent LABEL [--json|--verbose]
 ```
 
 智能体目标可以是终端 ID、唯一的智能体名称、检测到或上报的智能体标签,以及旧式窗格 ID。名称和标签是智能体的身份。终端 ID 和旧式窗格 ID 是底层的逃生舱。
 
-`agent read` 读取解析出的终端流。`agent send` 向该流写入字面文本。`agent get`、`agent focus`、`agent wait` 和 `agent attach` 要求解析出的终端具有智能体身份。`agent rename` 可以赋予这个身份。
+`agent start` 会在现有可用 shell 窗格中启动智能体;拓扑必须单独创建。kind 选择 Herdr 的标准交互式可执行文件,`--` 之后的参数会传给该程序。`agent prompt` 要求唯一的活动智能体名称,遵循当前的 bracketed paste 模式,并原子地提交文本和 Enter。加上 `--wait` 后,它会等待该提交之后的 idle、done 或 blocked 状态。单独的 `agent wait` 在当前为 idle、done 或 blocked 时立即返回,否则只在智能体处于 working 时等待。
+
+`agent read` 读取解析出的终端流。`agent send` 只写入字面文本,不会提交一轮对话;需要保护文本不触发输入模式快捷键并发送 Enter 时,请使用 `agent prompt`。`agent get`、`agent focus` 和 `agent attach` 接受更广泛的目标形式。`agent rename` 可以为自动检测到的智能体分配名称。
 
 `agent explain` 请求运行中的服务器对屏幕检测所用的同一份底部缓冲区检测快照进行分类,因此实时输出反映服务器生效的清单缓存。因为它使用 `agent.explain` socket 方法,升级 Herdr 后,请先重启或交接到更新后的服务器,再使用实时 explain。用 `--file PATH --agent LABEL` 可以改为在本地解释一份保存的样本。默认输出显示智能体、最终状态、清单来源和版本、匹配的规则及其区域证据,以及任何回退、跳过或警告原因。加 `--verbose` 可以看到可见证据标志、缓存的远程版本、本地覆盖的遮蔽情况、远程更新状态,以及带匹配器和区域证据的完整已评估规则列表。提交问题报告或写测试时加 `--json`。
 
@@ -368,12 +374,12 @@ herdr plugin log list [--plugin ID] [--limit N]
 托管终端窗格:
 
 ```bash
-herdr plugin pane open --plugin ID --entrypoint ID [--placement overlay|split|tab|zoomed] [--workspace ID] [--target-pane PANE] [--direction right|down] [--cwd PATH] [--env KEY=VALUE] [--focus|--no-focus]
+herdr plugin pane open --plugin ID --entrypoint ID [--placement overlay|popup|split|tab|zoomed] [--width SIZE] [--height SIZE] [--workspace ID] [--target-pane PANE] [--direction right|down] [--cwd PATH] [--env KEY=VALUE] [--focus|--no-focus]
 herdr plugin pane focus <pane_id>
 herdr plugin pane close <pane_id>
 ```
 
-`plugin pane open` 要求插件已链接、已启用并与当前平台兼容。它把清单声明的 `[[panes]]` 命令作为 Herdr 管理的终端窗格启动。清单的默认值是 `overlay`,在活动窗格上方打开一个临时的缩放覆盖层。它也可以作为分割、新标签页或缩放窗格打开。非终端的原生插件窗格是之后的能力面。
+`plugin pane open` 要求插件已链接、已启用并与当前平台兼容。它把清单声明的 `[[panes]]` 命令作为 Herdr 管理的终端窗格启动。清单的默认值是 `overlay`,在活动窗格上方打开一个临时的缩放覆盖层。它也可以作为分割、新标签页、缩放窗格,或不改变标签页布局的会话级模态 `popup` 打开。`--width` 和 `--height` 以终端单元格数或 `80%` 这样的百分比设置弹窗外层尺寸;省略时默认为终端大小的一半,过小的值会限制为弹窗最小尺寸。弹窗不是 Herdr 窗格,不会收到 `HERDR_PANE_ID`,也不参与 pane 或智能体 API。非终端的原生插件窗格是之后的能力面。
 
 `--env KEY=VALUE` 可以在启动进程的命令上重复使用,只作用于新启动的进程。当与调用方提供的环境变量冲突时,`HERDR_SOCKET_PATH`、`HERDR_BIN_PATH`、`HERDR_ENV`、`HERDR_WORKSPACE_ID`、`HERDR_TAB_ID`、`HERDR_PANE_ID`、`HERDR_PLUGIN_ID`、`HERDR_PLUGIN_ROOT`、`HERDR_PLUGIN_CONFIG_DIR`、`HERDR_PLUGIN_STATE_DIR`、`HERDR_PLUGIN_ENTRYPOINT_ID` 和 `HERDR_PLUGIN_CONTEXT_JSON` 等 Herdr 管理的变量保持权威。
 

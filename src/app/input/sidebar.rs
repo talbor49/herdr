@@ -682,6 +682,60 @@ mod tests {
     }
 
     #[test]
+    fn per_agent_row_heights_preserve_card_gaps_and_trailing_mouse_targets() {
+        let mut app = app_for_mouse_test();
+        let first = Workspace::test_new("one");
+        let first_pane = first.tabs[0].root_pane;
+        let second = Workspace::test_new("two");
+        let second_pane = second.tabs[0].root_pane;
+        app.state.workspaces = vec![first, second];
+        app.state.ensure_test_terminals();
+        for (ws_idx, pane_id, agent) in
+            [(0, first_pane, Agent::Pi), (1, second_pane, Agent::Claude)]
+        {
+            let terminal_id = app.state.workspaces[ws_idx].tabs[0].panes[&pane_id]
+                .attached_terminal_id
+                .clone();
+            app.state
+                .terminals
+                .get_mut(&terminal_id)
+                .unwrap()
+                .detected_agent = Some(agent);
+        }
+        app.state.sidebar_agents.rows = vec![vec![crate::config::AgentSidebarToken::Agent]];
+        app.state.sidebar_agents.rows_by_agent.insert(
+            "claude".into(),
+            vec![
+                vec![crate::config::AgentSidebarToken::Agent],
+                vec![crate::config::AgentSidebarToken::Workspace],
+            ],
+        );
+        app.state.sidebar_agents.row_gap = 1;
+        let detail_area = app.state.agent_panel_rect();
+        let metrics = crate::ui::agent_panel_scroll_metrics(&app.state, detail_area);
+        let body = crate::ui::agent_panel_body_rect(
+            detail_area,
+            crate::ui::should_show_scrollbar(metrics),
+        );
+
+        assert_eq!(
+            app.state.agent_detail_target_at(body.y),
+            Some((0, 0, first_pane))
+        );
+        assert_eq!(app.state.agent_detail_target_at(body.y + 1), None);
+        assert_eq!(
+            app.state.agent_detail_target_at(body.y + 3),
+            Some((1, 0, second_pane))
+        );
+
+        app.state.sidebar_agents.row_gap = 0;
+        assert_eq!(
+            app.state.agent_detail_target_at(body.y + 1),
+            Some((1, 0, second_pane))
+        );
+    }
+
+    #[test]
     fn clicking_agent_panel_toggle_switches_sort() {
         let mut app = app_for_mouse_test();
         app.state.workspaces = vec![Workspace::test_new("test")];
@@ -819,7 +873,16 @@ mod tests {
         let second_tab = ws.test_add_tab(Some("logs"));
         let second_pane = ws.tabs[second_tab].root_pane;
         let mut extra_tabs = Vec::new();
-        for (tab_name, agent) in [("review", Agent::Codex), ("ops", Agent::Gemini)] {
+        for (tab_name, agent) in [
+            ("review", Agent::Codex),
+            ("ops", Agent::Gemini),
+            ("build", Agent::Codex),
+            ("deploy", Agent::Gemini),
+            ("docs", Agent::Codex),
+            ("test", Agent::Gemini),
+            ("lint", Agent::Codex),
+            ("bench", Agent::Gemini),
+        ] {
             let tab_idx = ws.test_add_tab(Some(tab_name));
             let pane_id = ws.tabs[tab_idx].root_pane;
             extra_tabs.push((tab_idx, pane_id, agent));
@@ -856,6 +919,14 @@ mod tests {
         app.state.active = Some(0);
         app.state.selected = 0;
         app.state.mode = Mode::Terminal;
+        app.state.sidebar_agents.rows = vec![vec![crate::config::AgentSidebarToken::Agent]];
+        app.state.sidebar_agents.rows_by_agent.insert(
+            "claude".into(),
+            vec![
+                vec![crate::config::AgentSidebarToken::Agent],
+                vec![crate::config::AgentSidebarToken::Workspace],
+            ],
+        );
         app.state.agent_panel_scroll = 1;
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
         assert_eq!(
@@ -880,21 +951,7 @@ mod tests {
 
     fn set_chat_title(terminal: &mut crate::terminal::TerminalState, title: &str) {
         terminal.set_detected_state(Some(Agent::Claude), crate::detect::AgentState::Working);
-        terminal.set_agent_metadata(crate::terminal::AgentMetadataReport {
-            source: "user:claude-title".into(),
-            agent_label: Some("claude".into()),
-            applies_to_source: None,
-            title: Some(title.into()),
-            display_agent: None,
-            custom_status: None,
-            state_labels: std::collections::HashMap::new(),
-            clear_title: false,
-            clear_display_agent: false,
-            clear_custom_status: false,
-            clear_state_labels: false,
-            ttl: None,
-            seq: None,
-        });
+        terminal.set_terminal_title(Some(title.into()));
     }
 
     #[test]
@@ -1289,11 +1346,19 @@ mod tests {
             Workspace::test_new("b"),
             Workspace::test_new("c"),
         ];
+        app.state.sidebar_spaces.rows = vec![vec![crate::config::SpaceSidebarToken::Workspace]];
+        app.state.sidebar_spaces.row_gap = 0;
         let active_id = app.state.workspaces[1].id.clone();
         let selected_id = app.state.workspaces[2].id.clone();
         app.state.active = Some(1);
         app.state.selected = 2;
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+        let packed_boundary_row = app.state.view.workspace_card_areas[1].rect.y;
+        assert_eq!(
+            app.state.workspace_drop_index_at_row(packed_boundary_row),
+            Some(2)
+        );
+
         let source_row = app.state.view.workspace_card_areas[1].rect.y;
         let target_row = crate::ui::workspace_drop_indicator_row(
             &app.state.view.workspace_card_areas,
@@ -1524,6 +1589,7 @@ mod tests {
             .get_mut(&second_terminal_id)
             .unwrap()
             .cwd = second_repo.clone();
+        app.state.sidebar_spaces.row_gap = 1;
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
 
         assert_eq!(app.state.workspace_drop_index_at_row(0), Some(0));
@@ -1543,7 +1609,7 @@ mod tests {
             Workspace::test_new("b"),
             Workspace::test_new("c"),
         ];
-        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 24));
 
         let cards = &app.state.view.workspace_card_areas;
         let bottom_slot = crate::ui::workspace_drop_indicator_row(

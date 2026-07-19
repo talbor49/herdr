@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-#[cfg(any(windows, test))]
-use std::time::Duration;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 // Effective state arbitration is intentionally centralized here. Full lifecycle
 // Herdr hook integrations are hook-authoritative while live; screen recovery
@@ -22,7 +20,6 @@ pub struct HookAuthority {
     pub agent_label: String,
     pub state: AgentState,
     pub message: Option<String>,
-    pub custom_status: Option<String>,
     pub reported_at: Instant,
     pub session_ref: Option<crate::agent_resume::AgentSessionRef>,
 }
@@ -47,6 +44,22 @@ struct StaleFullLifecycleHookSession {
     session_ref: crate::agent_resume::AgentSessionRef,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ManagedAgentPhase {
+    Pending {
+        ready_after: Option<Instant>,
+        deadline: Instant,
+    },
+    Active,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ManagedAgent {
+    kind: Agent,
+    observed_expected: bool,
+    phase: ManagedAgentPhase,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EffectiveStateChange {
     pub previous_agent_label: Option<String>,
@@ -57,6 +70,12 @@ pub struct EffectiveStateChange {
     pub known_agent: Option<Agent>,
     pub state: AgentState,
     pub presentation: EffectivePresentation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct TerminalTitleChange {
+    pub(crate) raw_changed: bool,
+    pub(crate) stripped_changed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -79,13 +98,17 @@ pub struct TerminalState {
     fallback_observed_at: Option<Instant>,
     pub hook_authority: Option<HookAuthority>,
     pub agent_metadata: HashMap<String, AgentMetadata>,
+    pub metadata_tokens: crate::metadata_tokens::MetadataTokens,
     pub persisted_agent_session: Option<crate::agent_resume::PersistedAgentSession>,
+    pub terminal_title: Option<String>,
     pub manual_label: Option<String>,
     pub agent_name: Option<String>,
+    managed_agent: Option<ManagedAgent>,
     hook_report_sequences: HashMap<String, u64>,
     suppressed_full_lifecycle_hook_reports: HashMap<String, SuppressedFullLifecycleHookReport>,
     stale_full_lifecycle_hook_sessions: HashMap<String, Vec<StaleFullLifecycleHookSession>>,
     metadata_report_sequences: HashMap<String, u64>,
+    metadata_token_sequence_sources: std::collections::HashSet<String>,
     pub state: AgentState,
     pub last_agent_state_change_seq: Option<u64>,
     pub revision: u64,
@@ -106,13 +129,17 @@ impl TerminalState {
             fallback_observed_at: None,
             hook_authority: None,
             agent_metadata: HashMap::new(),
+            metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
             persisted_agent_session: None,
+            terminal_title: None,
             manual_label: None,
             agent_name: None,
+            managed_agent: None,
             hook_report_sequences: HashMap::new(),
             suppressed_full_lifecycle_hook_reports: HashMap::new(),
             stale_full_lifecycle_hook_sessions: HashMap::new(),
             metadata_report_sequences: HashMap::new(),
+            metadata_token_sequence_sources: std::collections::HashSet::new(),
             state: AgentState::Unknown,
             last_agent_state_change_seq: None,
             revision: 0,
@@ -120,6 +147,28 @@ impl TerminalState {
             respawn_shell_on_exit: false,
             recent_agent_process_exit_at: None,
             pending_agent_resume_plan: None,
+        }
+    }
+
+    pub(crate) fn terminal_title_stripped(&self) -> Option<String> {
+        self.terminal_title
+            .as_deref()
+            .and_then(super::stripped_terminal_title)
+    }
+
+    pub(crate) fn set_terminal_title(&mut self, title: Option<String>) -> TerminalTitleChange {
+        if self.terminal_title == title {
+            return TerminalTitleChange::default();
+        }
+        let previous_stripped = self.terminal_title_stripped();
+        self.terminal_title = title;
+        let stripped_changed = previous_stripped != self.terminal_title_stripped();
+        if stripped_changed {
+            self.revision = self.revision.wrapping_add(1);
+        }
+        TerminalTitleChange {
+            raw_changed: true,
+            stripped_changed,
         }
     }
 
@@ -331,25 +380,11 @@ impl TerminalState {
         message: Option<String>,
         seq: Option<u64>,
     ) -> Option<EffectiveStateChange> {
-        self.set_hook_authority_with_custom_status(source, agent_label, state, message, None, seq)
-    }
-
-    #[cfg(test)]
-    pub fn set_hook_authority_with_custom_status(
-        &mut self,
-        source: String,
-        agent_label: String,
-        state: AgentState,
-        message: Option<String>,
-        custom_status: Option<String>,
-        seq: Option<u64>,
-    ) -> Option<EffectiveStateChange> {
-        self.set_hook_authority_with_custom_status_at(
+        self.set_hook_authority_at(
             source,
             agent_label,
             state,
             message,
-            custom_status,
             None,
             seq,
             Instant::now(),
@@ -363,29 +398,26 @@ impl TerminalState {
         agent_label: String,
         state: AgentState,
         message: Option<String>,
-        custom_status: Option<String>,
         session_ref: Option<crate::agent_resume::AgentSessionRef>,
         seq: Option<u64>,
     ) -> Option<TerminalStateMutation> {
-        self.set_hook_authority_with_custom_status_at(
+        self.set_hook_authority_at(
             source,
             agent_label,
             state,
             message,
-            custom_status,
             session_ref,
             seq,
             Instant::now(),
         )
     }
 
-    pub fn set_hook_authority_with_custom_status_at(
+    pub fn set_hook_authority_at(
         &mut self,
         source: String,
         agent_label: String,
         state: AgentState,
         message: Option<String>,
-        custom_status: Option<String>,
         session_ref: Option<crate::agent_resume::AgentSessionRef>,
         seq: Option<u64>,
         now: Instant,
@@ -476,7 +508,6 @@ impl TerminalState {
             agent_label,
             state,
             message,
-            custom_status,
             reported_at: now,
             session_ref,
         });
@@ -1292,8 +1323,125 @@ impl TerminalState {
         self.agent_name = (!name.is_empty()).then_some(name);
     }
 
+    pub fn begin_managed_agent(
+        &mut self,
+        name: String,
+        kind: Agent,
+        now: Instant,
+        settle_delay: Duration,
+        timeout: Duration,
+    ) {
+        self.set_agent_name(name);
+        self.managed_agent = Some(ManagedAgent {
+            kind,
+            observed_expected: false,
+            phase: ManagedAgentPhase::Pending {
+                ready_after: Some(now.checked_add(settle_delay).unwrap_or(now)),
+                deadline: now.checked_add(timeout).unwrap_or(now),
+            },
+        });
+    }
+
+    pub fn managed_agent_launch_pending(&self) -> bool {
+        self.managed_agent
+            .is_some_and(|managed| matches!(managed.phase, ManagedAgentPhase::Pending { .. }))
+    }
+
+    pub fn managed_agent_interactive_ready(&self) -> bool {
+        self.managed_agent.is_some_and(|managed| {
+            matches!(managed.phase, ManagedAgentPhase::Active)
+                && self.effective_known_agent() == Some(managed.kind)
+                && matches!(self.state, AgentState::Idle | AgentState::Blocked)
+        })
+    }
+
+    pub fn managed_agent_kind(&self) -> Option<Agent> {
+        self.managed_agent.map(|managed| managed.kind)
+    }
+
+    pub fn next_managed_agent_deadline(&self) -> Option<Instant> {
+        let ManagedAgentPhase::Pending {
+            ready_after,
+            deadline,
+        } = self.managed_agent?.phase
+        else {
+            return None;
+        };
+        Some(ready_after.unwrap_or(deadline).min(deadline))
+    }
+
+    pub fn reconcile_managed_agent_at(&mut self, now: Instant, process_exited: bool) -> bool {
+        let Some(managed) = self.managed_agent else {
+            return false;
+        };
+        let known_agent = self.effective_known_agent();
+        let observed_expected = managed.observed_expected || known_agent == Some(managed.kind);
+        let clear = process_exited
+            || known_agent.is_some_and(|agent| agent != managed.kind)
+            || matches!(managed.phase, ManagedAgentPhase::Pending { .. })
+                && observed_expected
+                && known_agent.is_none();
+        if clear {
+            self.managed_agent = None;
+            self.agent_name = None;
+            return true;
+        }
+        if let ManagedAgentPhase::Pending {
+            ready_after,
+            deadline,
+        } = managed.phase
+        {
+            if now >= deadline {
+                self.managed_agent = None;
+                self.agent_name = None;
+                return true;
+            }
+            if ready_after.is_none_or(|ready_after| now >= ready_after) {
+                if known_agent == Some(managed.kind)
+                    && matches!(self.state, AgentState::Idle | AgentState::Blocked)
+                {
+                    self.managed_agent = Some(ManagedAgent {
+                        kind: managed.kind,
+                        observed_expected: true,
+                        phase: ManagedAgentPhase::Active,
+                    });
+                    return true;
+                }
+                if ready_after.is_some() {
+                    self.managed_agent = Some(ManagedAgent {
+                        kind: managed.kind,
+                        observed_expected,
+                        phase: ManagedAgentPhase::Pending {
+                            ready_after: None,
+                            deadline,
+                        },
+                    });
+                    return true;
+                }
+            }
+            if observed_expected != managed.observed_expected {
+                self.managed_agent = Some(ManagedAgent {
+                    observed_expected,
+                    ..managed
+                });
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn restore_managed_agent(&mut self, name: String, kind: Agent) {
+        self.set_agent_name(name);
+        self.managed_agent = Some(ManagedAgent {
+            kind,
+            observed_expected: true,
+            phase: ManagedAgentPhase::Active,
+        });
+    }
+
     pub fn clear_agent_name(&mut self) {
         self.agent_name = None;
+        self.managed_agent = None;
     }
 
     pub fn clear_agent_runtime_identity_after_respawn(&mut self) {
@@ -1396,6 +1544,62 @@ mod tests {
             .join(name)
             .display()
             .to_string()
+    }
+
+    #[test]
+    fn managed_agent_activates_only_after_matching_settled_detection() {
+        let mut terminal = test_terminal();
+        let now = Instant::now();
+        terminal.begin_managed_agent(
+            "reviewer".into(),
+            Agent::Pi,
+            now,
+            Duration::from_millis(100),
+            Duration::from_secs(1),
+        );
+        terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
+
+        assert!(terminal.managed_agent_launch_pending());
+        assert!(!terminal.managed_agent_interactive_ready());
+        assert!(terminal.reconcile_managed_agent_at(now + Duration::from_millis(100), false));
+        assert!(!terminal.managed_agent_launch_pending());
+        assert!(terminal.managed_agent_interactive_ready());
+        assert_eq!(terminal.agent_name.as_deref(), Some("reviewer"));
+
+        terminal.set_detected_state(None, AgentState::Unknown);
+        assert!(!terminal.reconcile_managed_agent_at(now + Duration::from_millis(101), false));
+        assert_eq!(terminal.agent_name.as_deref(), Some("reviewer"));
+        assert!(terminal.reconcile_managed_agent_at(now + Duration::from_millis(102), true));
+        assert_eq!(terminal.agent_name, None);
+    }
+
+    #[test]
+    fn managed_agent_mismatch_and_timeout_release_name() {
+        let now = Instant::now();
+        let mut mismatch = test_terminal();
+        mismatch.begin_managed_agent(
+            "reviewer".into(),
+            Agent::Pi,
+            now,
+            Duration::ZERO,
+            Duration::from_secs(1),
+        );
+        mismatch.set_detected_state(Some(Agent::Codex), AgentState::Idle);
+        assert!(mismatch.reconcile_managed_agent_at(now, false));
+        assert_eq!(mismatch.agent_name, None);
+        assert_eq!(mismatch.managed_agent_kind(), None);
+
+        let mut timed_out = test_terminal();
+        timed_out.begin_managed_agent(
+            "reviewer".into(),
+            Agent::Pi,
+            now,
+            Duration::from_millis(10),
+            Duration::from_millis(20),
+        );
+        assert!(timed_out.reconcile_managed_agent_at(now + Duration::from_millis(20), false));
+        assert_eq!(timed_out.agent_name, None);
+        assert_eq!(timed_out.managed_agent_kind(), None);
     }
 
     #[test]
@@ -1524,7 +1728,6 @@ mod tests {
                 "pi".into(),
                 AgentState::Idle,
                 None,
-                None,
                 crate::agent_resume::AgentSessionRef::path(old_session),
                 Some(10),
             );
@@ -1547,7 +1750,6 @@ mod tests {
                 "herdr:pi".into(),
                 "pi".into(),
                 AgentState::Working,
-                None,
                 None,
                 crate::agent_resume::AgentSessionRef::path(new_session.clone()),
                 Some(12),
@@ -1576,7 +1778,6 @@ mod tests {
             "pi".into(),
             AgentState::Idle,
             None,
-            None,
             crate::agent_resume::AgentSessionRef::path(session_a.clone()),
             Some(10),
         );
@@ -1592,7 +1793,6 @@ mod tests {
             "herdr:pi".into(),
             "pi".into(),
             AgentState::Idle,
-            None,
             None,
             crate::agent_resume::AgentSessionRef::path(session_b.clone()),
             Some(12),
@@ -1610,7 +1810,6 @@ mod tests {
             "pi".into(),
             AgentState::Working,
             None,
-            None,
             crate::agent_resume::AgentSessionRef::path(session_a.clone()),
             Some(14),
         );
@@ -1627,7 +1826,6 @@ mod tests {
             "herdr:pi".into(),
             "pi".into(),
             AgentState::Idle,
-            None,
             None,
             crate::agent_resume::AgentSessionRef::path(session_b),
             Some(15),
@@ -1681,7 +1879,6 @@ mod tests {
                 "pi".into(),
                 AgentState::Idle,
                 None,
-                None,
                 crate::agent_resume::AgentSessionRef::path(old_session.clone()),
                 Some(10),
             );
@@ -1697,7 +1894,6 @@ mod tests {
                 "herdr:pi".into(),
                 "pi".into(),
                 AgentState::Working,
-                None,
                 None,
                 crate::agent_resume::AgentSessionRef::path(new_session),
                 Some(12),
@@ -1724,7 +1920,6 @@ mod tests {
             "herdr:omp".into(),
             "omp".into(),
             AgentState::Working,
-            None,
             None,
             crate::agent_resume::AgentSessionRef::path(old_session.clone()),
             Some(10),
@@ -1754,7 +1949,6 @@ mod tests {
             "omp".into(),
             AgentState::Blocked,
             Some("waiting".into()),
-            None,
             crate::agent_resume::AgentSessionRef::path(new_session.clone()),
             Some(12),
         );
@@ -1771,7 +1965,6 @@ mod tests {
             "omp".into(),
             AgentState::Working,
             None,
-            None,
             crate::agent_resume::AgentSessionRef::path(old_session),
             Some(13),
         );
@@ -1785,11 +1978,10 @@ mod tests {
         let now = Instant::now();
         let mut terminal = test_terminal();
         terminal.set_detected_state(Some(Agent::Pi), AgentState::Working);
-        terminal.set_hook_authority_with_custom_status_at(
+        terminal.set_hook_authority_at(
             "herdr:pi".into(),
             "pi".into(),
             AgentState::Working,
-            None,
             None,
             None,
             Some(10),
@@ -1813,11 +2005,10 @@ mod tests {
             AgentState::Working
         );
 
-        let stale = terminal.set_hook_authority_with_custom_status_at(
+        let stale = terminal.set_hook_authority_at(
             "herdr:pi".into(),
             "pi".into(),
             AgentState::Working,
-            None,
             None,
             None,
             Some(9),
@@ -1833,11 +2024,10 @@ mod tests {
         let now = Instant::now();
         let mut terminal = test_terminal();
         terminal.set_detected_state(Some(Agent::Pi), AgentState::Working);
-        terminal.set_hook_authority_with_custom_status_at(
+        terminal.set_hook_authority_at(
             "herdr:pi".into(),
             "pi".into(),
             AgentState::Working,
-            None,
             None,
             None,
             Some(20),
@@ -1853,12 +2043,11 @@ mod tests {
             true,
             now + Duration::from_millis(1),
         );
-        let late = terminal.set_hook_authority_with_custom_status_at(
+        let late = terminal.set_hook_authority_at(
             "herdr:pi".into(),
             "pi".into(),
             AgentState::Working,
             None,
-            Some("late".into()),
             None,
             Some(21),
             now + Duration::from_millis(2),
@@ -1881,7 +2070,6 @@ mod tests {
             "pi".into(),
             AgentState::Working,
             None,
-            None,
             crate::agent_resume::AgentSessionRef::path(session_path.clone()),
             Some(20),
         );
@@ -1900,7 +2088,6 @@ mod tests {
             "pi".into(),
             AgentState::Working,
             None,
-            Some("late".into()),
             crate::agent_resume::AgentSessionRef::path(session_path),
             Some(21),
         );
@@ -1946,7 +2133,6 @@ mod tests {
             "pi".into(),
             AgentState::Working,
             None,
-            None,
             crate::agent_resume::AgentSessionRef::path(session_path.clone()),
             Some(20),
         );
@@ -1956,7 +2142,6 @@ mod tests {
             "herdr:pi".into(),
             "pi".into(),
             AgentState::Working,
-            None,
             None,
             crate::agent_resume::AgentSessionRef::path(session_path),
             Some(22),
@@ -1976,7 +2161,6 @@ mod tests {
             "pi".into(),
             AgentState::Working,
             None,
-            None,
             crate::agent_resume::AgentSessionRef::path(test_session_path("old.jsonl")),
             Some(20),
         );
@@ -1986,7 +2170,6 @@ mod tests {
             "herdr:pi".into(),
             "pi".into(),
             AgentState::Working,
-            None,
             None,
             crate::agent_resume::AgentSessionRef::path(test_session_path("new.jsonl")),
             Some(22),
@@ -2006,7 +2189,6 @@ mod tests {
             "pi".into(),
             AgentState::Working,
             None,
-            None,
             crate::agent_resume::AgentSessionRef::path(test_session_path("old.jsonl")),
             Some(1000),
         );
@@ -2016,7 +2198,6 @@ mod tests {
             "herdr:pi".into(),
             "pi".into(),
             AgentState::Working,
-            None,
             None,
             crate::agent_resume::AgentSessionRef::path(test_session_path("new.jsonl")),
             Some(1500),
@@ -2039,7 +2220,6 @@ mod tests {
             "pi".into(),
             AgentState::Working,
             None,
-            None,
             crate::agent_resume::AgentSessionRef::path(session_a.clone()),
             Some(1000),
         );
@@ -2049,7 +2229,6 @@ mod tests {
             "herdr:pi".into(),
             "pi".into(),
             AgentState::Working,
-            None,
             None,
             crate::agent_resume::AgentSessionRef::path(session_b),
             Some(1500),
@@ -2062,7 +2241,6 @@ mod tests {
             "pi".into(),
             AgentState::Working,
             None,
-            Some("late".into()),
             crate::agent_resume::AgentSessionRef::path(session_a),
             Some(2500),
         );
@@ -2070,7 +2248,6 @@ mod tests {
             "herdr:pi".into(),
             "pi".into(),
             AgentState::Working,
-            None,
             None,
             crate::agent_resume::AgentSessionRef::path(session_c),
             Some(2500),
@@ -2091,7 +2268,6 @@ mod tests {
             "pi".into(),
             AgentState::Working,
             None,
-            None,
             crate::agent_resume::AgentSessionRef::path(test_session_path("one.jsonl")),
             Some(20),
         );
@@ -2100,7 +2276,6 @@ mod tests {
             "herdr:pi".into(),
             "pi".into(),
             AgentState::Idle,
-            None,
             None,
             crate::agent_resume::AgentSessionRef::path(test_session_path("two.jsonl")),
             Some(21),
@@ -2219,7 +2394,6 @@ mod tests {
             "pi".into(),
             AgentState::Working,
             None,
-            None,
             crate::agent_resume::AgentSessionRef::path(old_session.clone()),
             Some(1000),
         );
@@ -2259,7 +2433,6 @@ mod tests {
             "pi".into(),
             AgentState::Working,
             None,
-            Some("late".into()),
             crate::agent_resume::AgentSessionRef::path(old_session),
             Some(500),
         );
@@ -2267,7 +2440,6 @@ mod tests {
             "herdr:pi".into(),
             "pi".into(),
             AgentState::Working,
-            None,
             None,
             crate::agent_resume::AgentSessionRef::path(new_session),
             Some(500),
@@ -2286,11 +2458,10 @@ mod tests {
         let new_session = test_session_path("new-after-process-exit.jsonl");
         let now = Instant::now();
         terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
-        terminal.set_hook_authority_with_custom_status_at(
+        terminal.set_hook_authority_at(
             "herdr:pi".into(),
             "pi".into(),
             AgentState::Working,
-            None,
             None,
             crate::agent_resume::AgentSessionRef::path(old_session),
             Some(1000),
@@ -2306,11 +2477,10 @@ mod tests {
             now + Duration::from_millis(1),
         );
 
-        let early_new = terminal.set_hook_authority_with_custom_status_at(
+        let early_new = terminal.set_hook_authority_at(
             "herdr:pi".into(),
             "pi".into(),
             AgentState::Working,
-            None,
             None,
             crate::agent_resume::AgentSessionRef::path(new_session.clone()),
             Some(500),
@@ -2338,11 +2508,10 @@ mod tests {
             false,
             now + Duration::from_millis(4),
         );
-        let fresh_new = terminal.set_hook_authority_with_custom_status_at(
+        let fresh_new = terminal.set_hook_authority_at(
             "herdr:pi".into(),
             "pi".into(),
             AgentState::Working,
-            None,
             None,
             crate::agent_resume::AgentSessionRef::path(new_session),
             Some(500),
@@ -2360,11 +2529,10 @@ mod tests {
         let old_session = test_session_path("old-before-nosession-process-exit.jsonl");
         let now = Instant::now();
         terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
-        terminal.set_hook_authority_with_custom_status_at(
+        terminal.set_hook_authority_at(
             "herdr:pi".into(),
             "pi".into(),
             AgentState::Working,
-            None,
             None,
             crate::agent_resume::AgentSessionRef::path(old_session),
             Some(1000),
@@ -2380,11 +2548,10 @@ mod tests {
             now + Duration::from_millis(1),
         );
 
-        let early_without_session = terminal.set_hook_authority_with_custom_status_at(
+        let early_without_session = terminal.set_hook_authority_at(
             "herdr:pi".into(),
             "pi".into(),
             AgentState::Working,
-            None,
             None,
             None,
             Some(500),
@@ -2412,11 +2579,10 @@ mod tests {
             false,
             now + Duration::from_millis(4),
         );
-        let fresh_without_session = terminal.set_hook_authority_with_custom_status_at(
+        let fresh_without_session = terminal.set_hook_authority_at(
             "herdr:pi".into(),
             "pi".into(),
             AgentState::Working,
-            None,
             None,
             None,
             Some(500),
@@ -2436,11 +2602,10 @@ mod tests {
         let session_c = test_session_path("generation-c.jsonl");
         let now = Instant::now();
         terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
-        terminal.set_hook_authority_with_custom_status_at(
+        terminal.set_hook_authority_at(
             "herdr:pi".into(),
             "pi".into(),
             AgentState::Working,
-            None,
             None,
             crate::agent_resume::AgentSessionRef::path(session_a.clone()),
             Some(1000),
@@ -2474,11 +2639,10 @@ mod tests {
             false,
             now + Duration::from_millis(3),
         );
-        let generation_b = terminal.set_hook_authority_with_custom_status_at(
+        let generation_b = terminal.set_hook_authority_at(
             "herdr:pi".into(),
             "pi".into(),
             AgentState::Working,
-            None,
             None,
             crate::agent_resume::AgentSessionRef::path(session_b),
             Some(500),
@@ -2514,21 +2678,19 @@ mod tests {
             now + Duration::from_millis(7),
         );
 
-        let late_generation_a = terminal.set_hook_authority_with_custom_status_at(
+        let late_generation_a = terminal.set_hook_authority_at(
             "herdr:pi".into(),
             "pi".into(),
             AgentState::Working,
             None,
-            Some("late".into()),
             crate::agent_resume::AgentSessionRef::path(session_a),
             Some(250),
             now + Duration::from_millis(8),
         );
-        let generation_c = terminal.set_hook_authority_with_custom_status_at(
+        let generation_c = terminal.set_hook_authority_at(
             "herdr:pi".into(),
             "pi".into(),
             AgentState::Working,
-            None,
             None,
             crate::agent_resume::AgentSessionRef::path(session_c),
             Some(250),
@@ -2596,7 +2758,6 @@ mod tests {
             "pi".into(),
             AgentState::Working,
             None,
-            None,
             crate::agent_resume::AgentSessionRef::id("fresh-session"),
             Some(22),
         );
@@ -2638,7 +2799,6 @@ mod tests {
                 "mastracode".into(),
                 AgentState::Working,
                 None,
-                None,
                 crate::agent_resume::AgentSessionRef::id("mastracode-new"),
                 Some(20),
             )
@@ -2669,7 +2829,6 @@ mod tests {
             agent_label.into(),
             AgentState::Working,
             None,
-            None,
             crate::agent_resume::AgentSessionRef::id(&old_session),
             Some(20),
         );
@@ -2682,7 +2841,6 @@ mod tests {
             agent_label.into(),
             AgentState::Working,
             None,
-            None,
             crate::agent_resume::AgentSessionRef::id(&old_session),
             Some(22),
         );
@@ -2694,7 +2852,6 @@ mod tests {
             source.into(),
             agent_label.into(),
             AgentState::Working,
-            None,
             None,
             crate::agent_resume::AgentSessionRef::id(&new_session),
             Some(23),
@@ -2709,11 +2866,10 @@ mod tests {
         let now = Instant::now();
         let mut terminal = test_terminal();
         terminal.set_detected_state(Some(Agent::Omp), AgentState::Idle);
-        terminal.set_hook_authority_with_custom_status_at(
+        terminal.set_hook_authority_at(
             "herdr:omp".into(),
             "omp".into(),
             AgentState::Working,
-            None,
             None,
             crate::agent_resume::AgentSessionRef::id("omp-old"),
             Some(1000),
@@ -2733,7 +2889,6 @@ mod tests {
             "herdr:omp".into(),
             "omp".into(),
             AgentState::Working,
-            None,
             None,
             crate::agent_resume::AgentSessionRef::id("omp-old"),
             Some(500),
@@ -2763,7 +2918,6 @@ mod tests {
             "herdr:omp".into(),
             "omp".into(),
             AgentState::Working,
-            None,
             None,
             crate::agent_resume::AgentSessionRef::id("omp-new"),
             Some(500),
@@ -2898,41 +3052,15 @@ mod tests {
     }
 
     #[test]
-    fn visible_blocker_suppresses_stale_hook_custom_status() {
-        let mut terminal = test_terminal();
-        terminal.set_detected_state(Some(Agent::Codex), AgentState::Idle);
-        terminal.set_hook_authority_with_custom_status(
-            "herdr:codex".into(),
-            "codex".into(),
-            AgentState::Working,
-            None,
-            Some("planning".into()),
-            None,
-        );
-
-        terminal.set_detected_state_with_visible_blocker(
-            Some(Agent::Codex),
-            AgentState::Blocked,
-            true,
-            false,
-            false,
-        );
-
-        assert_eq!(terminal.state, AgentState::Blocked);
-        assert_eq!(terminal.effective_custom_status(), None);
-    }
-
-    #[test]
     fn fallback_idle_does_not_override_hook_working() {
         let now = Instant::now();
         let mut terminal = test_terminal();
         terminal.set_detected_state(Some(Agent::Claude), AgentState::Working);
-        terminal.set_hook_authority_with_custom_status_at(
+        terminal.set_hook_authority_at(
             "herdr:claude".into(),
             "claude".into(),
             AgentState::Working,
             None,
-            Some("thinking".into()),
             None,
             None,
             now,
@@ -2950,10 +3078,6 @@ mod tests {
 
         assert_eq!(terminal.fallback_state, AgentState::Idle);
         assert_eq!(terminal.state, AgentState::Working);
-        assert_eq!(
-            terminal.effective_custom_status().as_deref(),
-            Some("thinking")
-        );
     }
 
     #[test]
@@ -2961,12 +3085,11 @@ mod tests {
         let now = Instant::now();
         let mut terminal = test_terminal();
         terminal.set_detected_state(Some(Agent::OpenCode), AgentState::Working);
-        terminal.set_hook_authority_with_custom_status_at(
+        terminal.set_hook_authority_at(
             "herdr:opencode".into(),
             "opencode".into(),
             AgentState::Working,
             None,
-            Some("thinking".into()),
             None,
             None,
             now,
@@ -2983,10 +3106,6 @@ mod tests {
 
         assert_eq!(terminal.fallback_state, AgentState::Working);
         assert_eq!(terminal.state, AgentState::Working);
-        assert_eq!(
-            terminal.effective_custom_status().as_deref(),
-            Some("thinking")
-        );
     }
 
     #[test]
@@ -2994,11 +3113,10 @@ mod tests {
         let now = Instant::now();
         let mut terminal = test_terminal();
         terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
-        terminal.set_hook_authority_with_custom_status_at(
+        terminal.set_hook_authority_at(
             "herdr:claude".into(),
             "claude".into(),
             AgentState::Idle,
-            None,
             None,
             None,
             None,
@@ -3025,11 +3143,10 @@ mod tests {
         let now = Instant::now();
         let mut terminal = test_terminal();
         terminal.set_detected_state(Some(Agent::Hermes), AgentState::Idle);
-        terminal.set_hook_authority_with_custom_status_at(
+        terminal.set_hook_authority_at(
             "herdr:hermes".into(),
             "hermes".into(),
             AgentState::Idle,
-            None,
             None,
             None,
             None,
@@ -3056,11 +3173,10 @@ mod tests {
         let now = Instant::now();
         let mut terminal = test_terminal();
         terminal.set_detected_state(Some(Agent::Kilo), AgentState::Idle);
-        terminal.set_hook_authority_with_custom_status_at(
+        terminal.set_hook_authority_at(
             "herdr:kilo".into(),
             "kilo".into(),
             AgentState::Idle,
-            None,
             None,
             None,
             None,
@@ -3096,11 +3212,10 @@ mod tests {
             now,
         );
 
-        let change = terminal.set_hook_authority_with_custom_status_at(
+        let change = terminal.set_hook_authority_at(
             "herdr:claude".into(),
             "claude".into(),
             AgentState::Idle,
-            None,
             None,
             None,
             None,
@@ -3131,12 +3246,11 @@ mod tests {
             false,
             now,
         );
-        terminal.set_hook_authority_with_custom_status_at(
+        terminal.set_hook_authority_at(
             "herdr:codex".into(),
             "codex".into(),
             AgentState::Blocked,
             None,
-            Some("permission".into()),
             None,
             None,
             now + Duration::from_millis(1201),
@@ -3156,10 +3270,6 @@ mod tests {
 
         assert_eq!(terminal.fallback_state, AgentState::Working);
         assert_eq!(terminal.state, AgentState::Blocked);
-        assert_eq!(
-            terminal.effective_custom_status().as_deref(),
-            Some("permission")
-        );
         assert!(change.effective_state_change.is_none());
     }
 
@@ -3271,11 +3381,10 @@ mod tests {
         let now = Instant::now();
         let mut terminal = test_terminal();
         terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
-        terminal.set_hook_authority_with_custom_status_at(
+        terminal.set_hook_authority_at(
             "herdr:pi".into(),
             "pi".into(),
             AgentState::Working,
-            None,
             None,
             None,
             None,
@@ -3379,11 +3488,10 @@ mod tests {
             false,
             observed,
         );
-        terminal.set_hook_authority_with_custom_status_at(
+        terminal.set_hook_authority_at(
             "herdr:claude".into(),
             "claude".into(),
             AgentState::Working,
-            None,
             None,
             None,
             Some(1),
@@ -3416,22 +3524,20 @@ mod tests {
             false,
             observed,
         );
-        terminal.set_hook_authority_with_custom_status_at(
+        terminal.set_hook_authority_at(
             "herdr:codex".into(),
             "codex".into(),
             AgentState::Working,
-            None,
             None,
             None,
             Some(1),
             observed,
         );
-        terminal.set_hook_authority_with_custom_status_at(
+        terminal.set_hook_authority_at(
             "herdr:codex".into(),
             "codex".into(),
             AgentState::Working,
             None,
-            Some("new turn".into()),
             None,
             Some(2),
             observed + Duration::from_secs(1),
@@ -3448,7 +3554,7 @@ mod tests {
         );
 
         let authority = terminal.hook_authority.as_ref().expect("hook authority");
-        assert_eq!(authority.custom_status.as_deref(), Some("new turn"));
+        assert_eq!(authority.reported_at, observed + Duration::from_secs(1));
         assert_eq!(terminal.state, AgentState::Working);
         assert_eq!(terminal.effective_agent_label(), Some("codex"));
     }
@@ -3530,7 +3636,6 @@ mod tests {
                 "pi".into(),
                 AgentState::Working,
                 None,
-                None,
                 crate::agent_resume::AgentSessionRef::path(session_path.clone()),
                 Some(20),
             )
@@ -3560,7 +3665,6 @@ mod tests {
             "pi".into(),
             AgentState::Working,
             None,
-            None,
             crate::agent_resume::AgentSessionRef::path(session_path.clone()),
             Some(20),
         );
@@ -3569,7 +3673,6 @@ mod tests {
             "herdr:pi".into(),
             "pi".into(),
             AgentState::Working,
-            None,
             None,
             crate::agent_resume::AgentSessionRef::path(new_session_path),
             Some(19),
@@ -3595,7 +3698,6 @@ mod tests {
             "pi".into(),
             AgentState::Working,
             None,
-            None,
             crate::agent_resume::AgentSessionRef::path(session_path),
             Some(20),
         );
@@ -3605,7 +3707,6 @@ mod tests {
                 "herdr:pi".into(),
                 "pi".into(),
                 AgentState::Working,
-                None,
                 None,
                 None,
                 Some(21),
@@ -3637,7 +3738,6 @@ mod tests {
                 "herdr:pi".into(),
                 "pi".into(),
                 AgentState::Working,
-                None,
                 None,
                 crate::agent_resume::AgentSessionRef::path(test_session_path("new.jsonl")),
                 Some(20),
@@ -4019,11 +4119,10 @@ mod tests {
         let mut terminal = test_terminal();
         let now = std::time::Instant::now();
         terminal
-            .set_hook_authority_with_custom_status_at(
+            .set_hook_authority_at(
                 "herdr:opencode".into(),
                 "opencode".into(),
                 AgentState::Working,
-                None,
                 None,
                 crate::agent_resume::AgentSessionRef::id("opencode-session"),
                 Some(20),
@@ -4066,7 +4165,6 @@ mod tests {
             "opencode".into(),
             AgentState::Working,
             None,
-            None,
             crate::agent_resume::AgentSessionRef::id("opencode-session"),
             Some(22),
         );
@@ -4077,7 +4175,6 @@ mod tests {
             "herdr:opencode".into(),
             "opencode".into(),
             AgentState::Working,
-            None,
             None,
             crate::agent_resume::AgentSessionRef::id("opencode-new-session"),
             Some(23),
@@ -4101,7 +4198,6 @@ mod tests {
             "herdr:pi".into(),
             "pi".into(),
             AgentState::Working,
-            None,
             None,
             crate::agent_resume::AgentSessionRef::path("/tmp/pi-session.jsonl"),
             Some(21),
@@ -4152,7 +4248,6 @@ mod tests {
                 "opencode".into(),
                 AgentState::Working,
                 None,
-                None,
                 crate::agent_resume::AgentSessionRef::id("opencode-session"),
                 Some(20),
             )
@@ -4164,7 +4259,6 @@ mod tests {
                 "opencode".into(),
                 AgentState::Blocked,
                 Some("needs approval".into()),
-                None,
                 crate::agent_resume::AgentSessionRef::id("nested-session"),
                 Some(21),
             )
@@ -4224,7 +4318,6 @@ mod tests {
             "pi".into(),
             AgentState::Working,
             None,
-            None,
             crate::agent_resume::AgentSessionRef::path(session_path),
             Some(20),
         );
@@ -4245,7 +4338,6 @@ mod tests {
             "herdr:pi".into(),
             "pi".into(),
             AgentState::Working,
-            None,
             None,
             crate::agent_resume::AgentSessionRef::path(session_path),
             Some(20),
@@ -4419,7 +4511,6 @@ mod tests {
             "claude".into(),
             AgentState::Working,
             None,
-            None,
             crate::agent_resume::AgentSessionRef::id("claude-session"),
             Some(20),
         );
@@ -4447,7 +4538,6 @@ mod tests {
             "herdr:hermes".into(),
             "hermes".into(),
             AgentState::Working,
-            None,
             None,
             crate::agent_resume::AgentSessionRef::id("hermes-session"),
             Some(20),

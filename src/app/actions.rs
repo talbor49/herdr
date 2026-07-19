@@ -1,6 +1,8 @@
 //! Pure state mutations on AppState.
 //! These don't need channels, async, or PTY runtime.
 
+use std::time::Instant;
+
 use tracing::{info, warn};
 
 use crate::detect::{Agent, AgentState};
@@ -11,7 +13,6 @@ use crate::layout::{find_in_direction, NavDirection};
 use crate::selection::Selection;
 use crate::terminal::{EffectiveStateChange, TerminalStateMutation};
 use crate::workspace::WorkspaceGitStatus;
-use unicode_width::UnicodeWidthChar;
 
 use super::state::{
     AgentNotificationDelivery, AppState, Mode, NavigatorRow, NavigatorStateFilter, NavigatorTarget,
@@ -544,15 +545,13 @@ impl AppState {
                     .and_then(|terminal| terminal.agent_name.as_deref())
                     .or_else(|| terminal.and_then(|terminal| terminal.effective_agent_label()))
             });
-            let custom_status = terminal.and_then(|terminal| terminal.effective_custom_status());
             let state = terminal
                 .map(|terminal| terminal.state)
                 .unwrap_or(AgentState::Unknown);
             let status_label = terminal
                 .map(|terminal| terminal.effective_presentation().state_labels)
                 .and_then(|labels| labels.get(state_label_text(state, pane.seen)).cloned());
-            let status = custom_status
-                .or(status_label)
+            let status = status_label
                 .or_else(|| agent_label.map(|_| state_label_text(state, pane.seen).to_string()));
             let meta = match (agent_label, status.as_deref()) {
                 (Some(agent_label), Some(status)) => format!("{agent_label} · {status}"),
@@ -919,6 +918,16 @@ impl AppState {
         self.terminals
             .values()
             .filter_map(|terminal| terminal.next_agent_metadata_expiry())
+            .chain(
+                self.terminals
+                    .values()
+                    .filter_map(|terminal| terminal.metadata_tokens.next_expiry()),
+            )
+            .chain(
+                self.workspaces
+                    .iter()
+                    .filter_map(|workspace| workspace.metadata_tokens.next_expiry()),
+            )
             .min()
     }
 
@@ -970,6 +979,48 @@ impl AppState {
                 Some(update)
             })
             .collect()
+    }
+
+    pub(crate) fn expire_metadata_tokens(
+        &mut self,
+        now: std::time::Instant,
+    ) -> (Vec<(usize, PaneId)>, Vec<usize>) {
+        let pane_terminals = self
+            .workspaces
+            .iter()
+            .enumerate()
+            .flat_map(|(ws_idx, workspace)| {
+                workspace.tabs.iter().flat_map(move |tab| {
+                    tab.layout
+                        .pane_ids()
+                        .into_iter()
+                        .filter_map(move |pane_id| {
+                            workspace
+                                .pane_state(pane_id)
+                                .map(|pane| (ws_idx, pane_id, pane.attached_terminal_id.clone()))
+                        })
+                })
+            })
+            .collect::<Vec<_>>();
+        let changed_panes = pane_terminals
+            .into_iter()
+            .filter_map(|(ws_idx, pane_id, terminal_id)| {
+                let terminal = self.terminals.get_mut(&terminal_id)?;
+                terminal.metadata_tokens.expire_at(now).then(|| {
+                    terminal.revision = terminal.revision.saturating_add(1);
+                    (ws_idx, pane_id)
+                })
+            })
+            .collect();
+        let changed_workspaces = self
+            .workspaces
+            .iter_mut()
+            .enumerate()
+            .filter_map(|(ws_idx, workspace)| {
+                workspace.metadata_tokens.expire_at(now).then_some(ws_idx)
+            })
+            .collect();
+        (changed_panes, changed_workspaces)
     }
 
     pub(crate) fn pane_is_in_active_tab(&self, ws_idx: usize, pane_id: PaneId) -> bool {
@@ -1367,21 +1418,12 @@ impl AppState {
             self.view.sidebar_rect,
             self.sidebar_section_split,
         );
-        let metrics = crate::ui::agent_panel_scroll_metrics(self, detail_area);
-        let visible = metrics.viewport_rows;
-        if visible == 0 {
-            return;
-        }
-
-        if idx < self.agent_panel_scroll {
-            self.agent_panel_scroll = idx;
-        } else if idx >= self.agent_panel_scroll.saturating_add(visible) {
-            self.agent_panel_scroll = idx.saturating_add(1).saturating_sub(visible);
-        }
-
-        let max_scroll =
-            crate::ui::agent_panel_scroll_metrics(self, detail_area).max_offset_from_bottom;
-        self.agent_panel_scroll = self.agent_panel_scroll.min(max_scroll);
+        self.agent_panel_scroll = crate::ui::agent_panel_scroll_for_target(
+            self,
+            detail_area,
+            self.agent_panel_scroll,
+            idx,
+        );
     }
 
     pub(crate) fn terminal_ids_for_workspace(
@@ -1475,6 +1517,8 @@ impl AppState {
         }
         for pane_id in pane_ids {
             self.plugin_panes.remove(&pane_id);
+            self.pane_graphics_layers.remove(&pane_id);
+            self.pane_graphics_streams.remove(&pane_id);
         }
     }
 
@@ -2203,7 +2247,7 @@ pub(crate) fn visible_text_cells(text: &str, pane_width: u16) -> Vec<VisibleText
             pending_wrap = false;
         }
 
-        let width = UnicodeWidthChar::width(ch).unwrap_or(0) as u16;
+        let width = u16::from(crate::ghostty::unicode_codepoint_width(ch as u32));
         cells.push(VisibleTextCell {
             byte_index,
             ch,
@@ -2235,7 +2279,7 @@ pub(crate) fn logical_cell_for_visible_cell(
     visible_text_cells(text, pane_width)
         .into_iter()
         .find(|cell| {
-            let width = UnicodeWidthChar::width(cell.ch).unwrap_or(0) as u16;
+            let width = u16::from(crate::ghostty::unicode_codepoint_width(cell.ch as u32));
             cell.screen_row == target_row
                 && if width == 0 {
                     target_col == cell.screen_col
@@ -2268,7 +2312,7 @@ fn text_cells(row: &str) -> Vec<TextCell> {
     let mut next_col = 0u16;
     row.chars()
         .map(|ch| {
-            let width = UnicodeWidthChar::width(ch).unwrap_or(0) as u16;
+            let width = u16::from(crate::ghostty::unicode_codepoint_width(ch as u32));
             let start_col = if width == 0 {
                 next_col.saturating_sub(1)
             } else {
@@ -2571,7 +2615,7 @@ impl AppState {
                 observed_at,
             } => self
                 .update_terminal_state(pane_id, |terminal| {
-                    Some(terminal.set_detected_state_with_screen_signals_at(
+                    let mutation = terminal.set_detected_state_with_screen_signals_at(
                         agent,
                         state,
                         visible_blocker,
@@ -2579,7 +2623,11 @@ impl AppState {
                         visible_working,
                         process_exited,
                         observed_at,
-                    ))
+                    );
+                    if process_exited {
+                        terminal.reconcile_managed_agent_at(observed_at, true);
+                    }
+                    Some(mutation)
                 })
                 .into_iter()
                 .collect(),
@@ -2589,7 +2637,6 @@ impl AppState {
                 agent_label,
                 state,
                 message,
-                custom_status,
                 seq,
                 session_ref,
             } => {
@@ -2606,7 +2653,6 @@ impl AppState {
                             agent_label,
                             state,
                             message,
-                            custom_status,
                             session_ref,
                             seq,
                         )
@@ -2641,11 +2687,9 @@ impl AppState {
                 applies_to_source,
                 title,
                 display_agent,
-                custom_status,
                 state_labels,
                 clear_title,
                 clear_display_agent,
-                clear_custom_status,
                 clear_state_labels,
                 seq,
                 ttl,
@@ -2657,11 +2701,9 @@ impl AppState {
                         applies_to_source,
                         title,
                         display_agent,
-                        custom_status,
                         state_labels,
                         clear_title,
                         clear_display_agent,
-                        clear_custom_status,
                         clear_state_labels,
                         ttl,
                         seq,
@@ -2747,11 +2789,13 @@ impl AppState {
             .attached_terminal_id
             .clone();
         let previous_seen = self.workspaces[ws_idx].pane_state(pane_id)?.seen;
-        let mutation = {
+        let (mutation, managed_changed) = {
             let terminal = self.terminals.get_mut(&terminal_id)?;
-            update(terminal)?
+            let mutation = update(terminal)?;
+            let managed_changed = terminal.reconcile_managed_agent_at(Instant::now(), false);
+            (mutation, managed_changed)
         };
-        if mutation.session_ref_changed {
+        if mutation.session_ref_changed || managed_changed {
             self.mark_session_dirty();
         }
         let change = mutation.effective_state_change?;
@@ -2777,6 +2821,40 @@ impl AppState {
             presentation: change.presentation.clone(),
         };
         Some(update)
+    }
+
+    pub(crate) fn next_managed_agent_deadline(&self) -> Option<Instant> {
+        self.terminals
+            .values()
+            .filter_map(crate::terminal::TerminalState::next_managed_agent_deadline)
+            .min()
+    }
+
+    pub(crate) fn reconcile_managed_agents_at(&mut self, now: Instant) -> Vec<(usize, PaneId)> {
+        let mut changed_terminals = std::collections::HashSet::new();
+        for (terminal_id, terminal) in &mut self.terminals {
+            if terminal.reconcile_managed_agent_at(now, false) {
+                changed_terminals.insert(terminal_id.clone());
+            }
+        }
+        if changed_terminals.is_empty() {
+            return Vec::new();
+        }
+        self.mark_session_dirty();
+        self.workspaces
+            .iter()
+            .enumerate()
+            .flat_map(|(ws_idx, workspace)| {
+                let changed_terminals = &changed_terminals;
+                workspace.tabs.iter().flat_map(move |tab| {
+                    tab.panes.iter().filter_map(move |(&pane_id, pane)| {
+                        changed_terminals
+                            .contains(&pane.attached_terminal_id)
+                            .then_some((ws_idx, pane_id))
+                    })
+                })
+            })
+            .collect()
     }
 
     pub(crate) fn publish_pane_process_exit_if_agent(
@@ -3108,6 +3186,26 @@ mod tests {
         state
     }
 
+    fn insert_test_pane_graphics_layer(state: &mut AppState, pane_id: PaneId) {
+        state.pane_graphics_layers.insert(
+            pane_id,
+            crate::app::state::PaneGraphicsLayer::new(
+                crate::api::schema::PaneGraphicsFormat::Rgba,
+                1,
+                1,
+                vec![1, 2, 3, 4],
+                crate::api::schema::PaneGraphicsPlacementParams::default(),
+            ),
+        );
+    }
+
+    fn insert_test_pane_graphics_state(state: &mut AppState, pane_id: PaneId) {
+        insert_test_pane_graphics_layer(state, pane_id);
+        state
+            .pane_graphics_streams
+            .insert(pane_id, "test-stream".into());
+    }
+
     fn mark_linked_worktree(state: &mut AppState, ws_idx: usize) {
         state.workspaces[ws_idx].worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
             key: "repo-key".into(),
@@ -3163,7 +3261,7 @@ mod tests {
         let prefix = &row[..byte_idx];
         prefix
             .chars()
-            .map(|ch| UnicodeWidthChar::width(ch).unwrap_or(0) as u16)
+            .map(|ch| u16::from(crate::ghostty::unicode_codepoint_width(ch as u32)))
             .sum()
     }
 
@@ -4664,7 +4762,6 @@ mod tests {
             agent_label: "hermes".into(),
             state: AgentState::Blocked,
             message: None,
-            custom_status: None,
             seq: None,
             session_ref: None,
         });
@@ -4703,7 +4800,6 @@ mod tests {
             agent_label: "codex".into(),
             state: AgentState::Working,
             message: None,
-            custom_status: None,
             seq: Some(1),
             session_ref: None,
         });
@@ -4752,7 +4848,6 @@ mod tests {
             agent_label: "claude".into(),
             state: AgentState::Blocked,
             message: None,
-            custom_status: None,
             seq: Some(1),
             session_ref: crate::agent_resume::AgentSessionRef::id("claude-session"),
         });
@@ -4835,7 +4930,6 @@ mod tests {
             agent_label: "devin".into(),
             state: AgentState::Working,
             message: None,
-            custom_status: None,
             seq: Some(1),
             session_ref: crate::agent_resume::AgentSessionRef::id("devin-session"),
         });
@@ -4860,7 +4954,6 @@ mod tests {
             agent_label: "pi".into(),
             state: AgentState::Working,
             message: None,
-            custom_status: None,
             seq: Some(20),
             session_ref: crate::agent_resume::AgentSessionRef::path(first_session),
         });
@@ -4873,7 +4966,6 @@ mod tests {
             agent_label: "pi".into(),
             state: AgentState::Working,
             message: None,
-            custom_status: None,
             seq: Some(21),
             session_ref: crate::agent_resume::AgentSessionRef::path(second_session),
         });
@@ -5253,10 +5345,13 @@ mod tests {
                 entrypoint: "board".into(),
             },
         );
+        insert_test_pane_graphics_state(&mut state, closed);
 
         state.close_pane();
         assert_eq!(state.workspaces[0].panes.len(), 1);
         assert!(!state.plugin_panes.contains_key(&closed));
+        assert!(!state.pane_graphics_layers.contains_key(&closed));
+        assert!(!state.pane_graphics_streams.contains_key(&closed));
         state.assert_invariants_for_test();
     }
 
@@ -5321,11 +5416,14 @@ mod tests {
                 entrypoint: "board".into(),
             },
         );
+        insert_test_pane_graphics_state(&mut state, pane_id);
 
         state.close_tab();
 
         assert!(!state.terminals.contains_key(&terminal_id));
         assert!(!state.plugin_panes.contains_key(&pane_id));
+        assert!(!state.pane_graphics_layers.contains_key(&pane_id));
+        assert!(!state.pane_graphics_streams.contains_key(&pane_id));
         state.assert_invariants_for_test();
     }
 
@@ -5341,11 +5439,14 @@ mod tests {
                 entrypoint: "board".into(),
             },
         );
+        insert_test_pane_graphics_state(&mut state, pane_id);
 
         state.close_selected_workspace();
 
         assert!(!state.terminals.contains_key(&terminal_id));
         assert!(!state.plugin_panes.contains_key(&pane_id));
+        assert!(!state.pane_graphics_layers.contains_key(&pane_id));
+        assert!(!state.pane_graphics_streams.contains_key(&pane_id));
         state.assert_invariants_for_test();
     }
 

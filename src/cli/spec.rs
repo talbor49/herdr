@@ -160,6 +160,16 @@ fn workspace_command() -> Command {
                 .arg(required("workspace_id", "WORKSPACE_ID"))
                 .arg(required("label", "LABEL").num_args(1..)),
         )
+        .subcommand(
+            Command::new("report-metadata")
+                .about("Report display-only workspace metadata")
+                .arg(required("workspace_id", "WORKSPACE_ID"))
+                .arg(option("source", "ID"))
+                .arg(repeatable_option("token", "NAME=VALUE"))
+                .arg(repeatable_option("clear-token", "NAME"))
+                .arg(option("seq", "N"))
+                .arg(option("ttl-ms", "N")),
+        )
         .subcommand(id_command("close", "workspace_id", "Close a workspace"))
 }
 
@@ -275,6 +285,14 @@ fn agent_command() -> Command {
                 .arg(required("text", "TEXT")),
         )
         .subcommand(
+            Command::new("prompt")
+                .about("Submit a prompt to a named agent")
+                .arg(required("name", "NAME"))
+                .arg(required("text", "TEXT"))
+                .arg(flag("wait"))
+                .arg(option("timeout", "MS")),
+        )
+        .subcommand(
             Command::new("rename")
                 .about("Rename an agent")
                 .arg(required("target", "TARGET"))
@@ -284,9 +302,8 @@ fn agent_command() -> Command {
         .subcommand(id_command("focus", "target", "Focus an agent"))
         .subcommand(
             Command::new("wait")
-                .about("Wait for an agent status")
-                .arg(required("target", "TARGET"))
-                .arg(agent_wait_status_option())
+                .about("Wait until a named agent is no longer working")
+                .arg(required("name", "NAME"))
                 .arg(option("timeout", "MS")),
         )
         .subcommand(
@@ -297,15 +314,17 @@ fn agent_command() -> Command {
         )
         .subcommand(
             Command::new("start")
-                .about("Start an agent command")
+                .about("Start a supported interactive agent in an existing pane")
                 .arg(required("name", "NAME"))
-                .arg(path_option("cwd", "PATH"))
-                .arg(option("workspace", "ID"))
-                .arg(option("tab", "ID"))
-                .arg(split_option())
-                .arg(env_option())
-                .arg(flag("focus"))
-                .arg(flag("no-focus")),
+                .arg(option("kind", "KIND").required(true))
+                .arg(option("pane", "ID").required(true))
+                .arg(option("timeout", "MS"))
+                .arg(
+                    Arg::new("agent_args")
+                        .value_name("AGENT_ARG")
+                        .num_args(0..)
+                        .last(true),
+                ),
         )
         .subcommand(
             Command::new("explain")
@@ -467,7 +486,6 @@ fn report_agent_command() -> Command {
         .arg(option("agent", "LABEL"))
         .arg(pane_agent_state_option("state"))
         .arg(option("message", "TEXT"))
-        .arg(option("custom-status", "TEXT"))
         .arg(option("seq", "N"))
         .arg(option("agent-session-id", "ID"))
         .arg(path_option("agent-session-path", "PATH"))
@@ -505,10 +523,10 @@ fn report_metadata_command() -> Command {
         .arg(flag("clear-title"))
         .arg(option("display-agent", "TEXT"))
         .arg(flag("clear-display-agent"))
-        .arg(option("custom-status", "TEXT"))
-        .arg(flag("clear-custom-status"))
         .arg(option("state-label", "STATUS=TEXT"))
         .arg(flag("clear-state-labels"))
+        .arg(repeatable_option("token", "NAME=VALUE"))
+        .arg(repeatable_option("clear-token", "NAME"))
         .arg(option("seq", "N"))
         .arg(option("ttl-ms", "N"))
 }
@@ -745,10 +763,6 @@ fn direction_option() -> Arg {
     option("direction", "DIRECTION").value_parser(["left", "right", "up", "down"])
 }
 
-fn split_option() -> Arg {
-    option("split", "DIRECTION").value_parser(["right", "down"])
-}
-
 fn split_direction_option() -> Arg {
     option("direction", "DIRECTION").value_parser(["right", "down"])
 }
@@ -757,12 +771,6 @@ fn status_option(name: &'static str, required: bool) -> Arg {
     option(name, "STATUS")
         .required(required)
         .value_parser(["idle", "working", "blocked", "done", "unknown"])
-}
-
-fn agent_wait_status_option() -> Arg {
-    option("status", "STATUS")
-        .required(true)
-        .value_parser(["idle", "working", "blocked", "unknown"])
 }
 
 fn pane_agent_state_option(name: &'static str) -> Arg {
@@ -815,6 +823,10 @@ fn option(name: &'static str, value_name: &'static str) -> Arg {
         .long(name)
         .value_name(value_name)
         .action(ArgAction::Set)
+}
+
+fn repeatable_option(name: &'static str, value_name: &'static str) -> Arg {
+    option(name, value_name).action(ArgAction::Append)
 }
 
 fn path_option(name: &'static str, value_name: &'static str) -> Arg {
@@ -914,14 +926,11 @@ mod tests {
     }
 
     #[test]
-    fn spec_includes_agent_status_values() {
+    fn spec_keeps_agent_wait_status_free() {
         let cmd = super::command();
         let wait = command_path(&cmd, &["agent", "wait"]);
-        let values = option_values(wait, "status");
-        assert!(values.contains(&"idle".to_string()));
-        assert!(values.contains(&"working".to_string()));
-        assert!(values.contains(&"blocked".to_string()));
-        assert!(!values.contains(&"done".to_string()));
+        assert!(!has_option(wait, "status"));
+        assert!(has_option(wait, "timeout"));
     }
 
     #[test]
@@ -941,12 +950,17 @@ mod tests {
     }
 
     #[test]
-    fn spec_does_not_complete_agent_start_argv_without_separator() {
+    fn spec_models_agent_start_target_and_trailing_args() {
         let cmd = super::command();
         let agent_start = command_path(&cmd, &["agent", "start"]);
-        assert!(!agent_start
+        assert!(has_option(agent_start, "kind"));
+        assert!(has_option(agent_start, "pane"));
+        for legacy in ["cwd", "workspace", "tab", "split", "focus", "env", "argv"] {
+            assert!(!has_option(agent_start, legacy), "legacy option --{legacy}");
+        }
+        assert!(agent_start
             .get_arguments()
-            .any(|arg| arg.get_id() == "argv"));
+            .any(|arg| arg.get_id() == "agent_args"));
     }
 
     #[test]

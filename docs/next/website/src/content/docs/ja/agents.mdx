@@ -47,7 +47,7 @@ Claude Code、Codex、GitHub Copilot CLI、Droid、Qoder CLI、Cursor Agent CLI 
 
 ## VM とサンドボックスラッパー
 
-Linux では、VM、Bubblewrap、`fence` のようなラッパーがホストの `/proc` から実際のエージェントプロセスを隠すことがあります。コマンドに `HERDR_AGENT=<agent>` を設定して (例: `HERDR_AGENT=claude fence -- claude`)、どの既存エージェントのスクリーンマニフェストを使うべきか Herdr に伝えてください。このヒントはそのフォアグラウンドプロセスにスコープされます。継承されるすべてのフォアグラウンドプロセスをそのエージェントとして扱いたいのでない限り、シェルからグローバルに export するのは避けてください。
+Linux と macOS では、ホストから見えるラッパーが実際のエージェントプロセスを Herdr から隠すことがあります。ラッパーのコマンドに `HERDR_AGENT=<agent>` を設定して、どの既存エージェントのスクリーンマニフェストを使うべきか Herdr に伝えてください。たとえば、Linux では `HERDR_AGENT=claude fence -- claude`、macOS では `HERDR_AGENT=claude nono run --profile claude-code -- claude` を実行します。このヒントはそのフォアグラウンドプロセスにスコープされます。VM やコンテナの内部だけで設定しても Herdr からは見えません。また、継承されるすべてのフォアグラウンドプロセスをそのエージェントとして扱いたいのでない限り、グローバルな export は避けてください。
 
 ## blocked 状態
 
@@ -114,35 +114,54 @@ herdr agent rename reviewer --clear
 
 ## カスタムステータスラベル
 
-インテグレーションは、意味的な状態を変えずに表示用ステータスラベルを報告できます。
+インテグレーションは、ライフサイクル状態を意味的な状態としてのみ報告します。表示のカスタマイズは、ペインメタデータのトークンとして別に追加します。
 
 ```bash
 herdr pane report-agent w1:p1 \
   --source custom:indexer \
   --agent docs-bot \
-  --state working \
-  --custom-status indexing
+  --state working
+
+herdr pane report-metadata w1:p1 \
+  --source custom:indexer-display \
+  --token summary=indexing
 ```
 
-`state` は wait、通知、ロールアップを制御します。`custom-status` は表示テキストだけです。
+`state` は wait、通知、ロールアップを制御します。`summary` トークンは表示専用で、エージェントサイドバー行では `$summary` として使えます。
+
+エージェントサイドバー行では、`terminal_title` または `terminal_title_stripped` も任意で使えます。どちらもデフォルト行には含まれません。前者は安全性のために正規化された最新の OSC 0/2 ターミナルタイトルを表示し、後者は先頭にある認識済みのアクティビティまたはスピナーのグリフ 1 つと、それに続く空白を除去します。これらの値は Herdr サーバーが所有し、コールドリスタートをまたいで保持されません。また、メタデータのタイトルや意味的なエージェント状態から独立しています。そのため、除去後のテキストが同じなら、スピナーのアニメーションで生のタイトルが変わってもペイン更新は発行されません。
 
 ## CLI からエージェントを起動する
 
-ターミナルをエージェントターゲットとして扱いたいときは `herdr agent ...` コマンドを使います。エージェントターゲットは `agent list` に表示され、エージェント名で読み取りや入力送信ができ、エージェント状態で wait でき、直接アタッチできます。
-
-スクリプトから Herdr にエージェントを起動します:
+まずワークスペース、タブ、ペイン、レイアウトの各コマンドでトポロジーを作成します。次に、既存のシェルペインを一意な名前を持つ対応済み対話型エージェントとして起動します:
 
 ```bash
-herdr agent start reviewer --cwd ~/project --split right -- pi
+herdr pane split --current --direction right --no-focus
+herdr agent start reviewer --kind pi --pane w1:p2
 ```
 
-特定のワークスペースやタブに配置することもできます:
+`agent start` はトポロジーを作成も分割もしません。要求された kind に対応する標準実行ファイルを Herdr が選び、対象ペインに一意な名前を付け、対話型エージェントが idle、done、または blocked として検出されるまで待ちます。ネイティブ引数は `--` の後に指定できます:
 
 ```bash
-herdr agent start docs --workspace w1 --tab w1:t1 -- claude
+herdr agent start reviewer --kind pi --pane w1:p2 -- --name scratch --no-session
 ```
 
-通常のターミナル、サーバー、テスト、シェル、低レベルなターミナル入力には `herdr pane ...` コマンドを使ってください。たとえば `cargo test` には `agent start` ではなく `pane split` と `pane run` を使います。そのターミナルを意図的にエージェントターゲットとして扱うのでない限り。
+名前でプロンプトを送信します。`--wait` はそのプロンプトに待機を結び付け、エージェントが完了または blocked になると返ります:
+
+```bash
+herdr agent prompt reviewer "Review the current diff" --wait --timeout 120000
+```
+
+`agent prompt` は Enter を送る前にターミナルの現在の bracketed paste モードを尊重するため、`A != B` のようなテキストも入力モードのキーバインドを発火させずにエージェントへ届きます。送信にはこれを使ってください。`agent send` は低レベルのリテラルテキスト操作のままで、ターンを送信しません。
+
+すでに working のエージェントには `agent wait` を使います。状態が idle、done、または blocked になると返り、すでにその状態なら即座に返ります。
+
+```bash
+herdr agent wait reviewer --timeout 120000
+herdr agent read reviewer --source recent-unwrapped --lines 120
+```
+
+通常のターミナル、サーバー、テスト、シェル、トポロジー、低レベルなターミナル入力には `herdr pane ...` コマンドを使ってください。
 
 ## エージェントに直接アタッチする
 
