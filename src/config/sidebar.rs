@@ -6,7 +6,7 @@ use crate::detect::Agent;
 
 const MAX_SIDEBAR_ROWS: usize = 16;
 const MAX_SIDEBAR_TOKENS_PER_ROW: usize = 16;
-const DEFAULT_SIDEBAR_ROW_GAP: u16 = 0;
+const DEFAULT_SIDEBAR_ROW_GAP: u16 = 1;
 
 fn deserialize_sidebar_rows<'de, D, T>(deserializer: D) -> Result<Vec<Vec<T>>, D::Error>
 where
@@ -450,7 +450,7 @@ mod tests {
             ]
         );
         assert!(config.agents.rows_by_agent.is_empty());
-        assert_eq!(config.agents.row_gap, 0);
+        assert_eq!(config.agents.row_gap, 1);
         assert_eq!(
             config.spaces.rows,
             vec![
@@ -458,7 +458,7 @@ mod tests {
                 vec![SpaceSidebarToken::Branch, SpaceSidebarToken::GitStatus],
             ]
         );
-        assert_eq!(config.spaces.row_gap, 0);
+        assert_eq!(config.spaces.row_gap, 1);
     }
 
     #[test]

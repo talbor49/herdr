@@ -683,14 +683,14 @@
         {
           "key": "ui.sidebar.agents.row_gap",
           "type": "integer",
-          "default": "0",
-          "description": "Blank terminal rows between expanded Agent sidebar entries. Set to 1 to restore the previous spacing."
+          "default": "1",
+          "description": "Blank terminal rows between expanded Agent sidebar entries. Set to 0 to pack entries with no spacing."
         },
         {
           "key": "ui.sidebar.agents.rows",
           "type": "list of token rows",
-          "default": "[[\"state_icon\", \"workspace\", \"tab\"], [\"agent\"]]",
-          "description": "Default expanded Agent sidebar layout. Entries may be token strings or inline { token, fg, bold, dim } style tables. Supports built-in and $name metadata tokens; at most 16 rows and 16 tokens per row."
+          "default": "[[\"state_icon\", \"workspace\", \"tab\"], [\"terminal_title_stripped\"]]",
+          "description": "Default expanded Agent sidebar layout. Entries may be token strings or inline { token, fg, bold, dim } style tables. Supports built-in and $name metadata tokens; at most 16 rows and 16 tokens per row. A lone terminal-title row wraps across up to two lines."
         },
         {
           "key": "ui.sidebar.agents.rows_by_agent",
@@ -701,8 +701,8 @@
         {
           "key": "ui.sidebar.spaces.row_gap",
           "type": "integer",
-          "default": "0",
-          "description": "Blank terminal rows between expanded Space sidebar entries. Set to 1 to restore the previous spacing. Consecutive indented worktree children remain packed as one group."
+          "default": "1",
+          "description": "Blank terminal rows between expanded Space sidebar entries. Set to 0 to pack entries with no spacing. Consecutive indented worktree children remain packed as one group."
         },
         {
           "key": "ui.sidebar.spaces.rows",

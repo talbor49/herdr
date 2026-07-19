@@ -1824,7 +1824,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
     }
 
     #[test]
-    fn default_agent_row_gap_packs_rendering_and_scroll_geometry() {
+    fn default_agent_row_gap_spaces_rendering_and_scroll_geometry() {
         let mut app = crate::app::state::AppState::test_new();
         app.workspaces = vec![Workspace::test_new("one"), Workspace::test_new("two")];
         app.ensure_test_terminals();
@@ -1836,12 +1836,13 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             app.terminals.get_mut(&terminal_id).unwrap().detected_agent = Some(agent);
         }
         app.sidebar_agents.rows = vec![vec![crate::config::AgentSidebarToken::Agent]];
-        assert_eq!(app.sidebar_agents.row_gap, 0);
+        // The default leaves one blank row of padding between entries.
+        assert_eq!(app.sidebar_agents.row_gap, 1);
 
-        let area = Rect::new(0, 0, 20, 5);
+        let area = Rect::new(0, 0, 20, 8);
         let metrics = agent_panel_scroll_metrics(&app, area);
         let body = agent_panel_body_rect(area, false);
-        let mut terminal = Terminal::new(TestBackend::new(20, 5)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(20, 8)).unwrap();
         terminal
             .draw(|frame| render_agent_detail(&app, &TerminalRuntimeRegistry::new(), frame, area))
             .unwrap();
@@ -1850,7 +1851,8 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         assert_eq!(metrics.viewport_rows, 2);
         assert_eq!(metrics.max_offset_from_bottom, 0);
         assert_eq!(row_text(buffer, body.y, body.width), " pi");
-        assert_eq!(row_text(buffer, body.y + 1, body.width), " claude");
+        assert_eq!(row_text(buffer, body.y + 1, body.width).trim(), "");
+        assert_eq!(row_text(buffer, body.y + 2, body.width), " claude");
     }
 
     #[test]
