@@ -573,7 +573,7 @@ pub(crate) fn compute_agent_panel_card_areas(
     let mut cards = Vec::new();
     let mut row_y = body.y;
     for (index, entry) in entries.iter().enumerate().skip(app.agent_panel_scroll) {
-        let height = agent_entry_height_in_body(app, entry, body.height);
+        let height = agent_entry_height_in_body(app, entry, body.height, body.width);
         if row_y.saturating_add(height) > body_bottom {
             break;
         }
@@ -591,21 +591,99 @@ pub(crate) fn compute_agent_panel_card_areas(
     cards
 }
 
-fn resolved_agent_rows(app: &AppState, entry: &AgentPanelEntry) -> Vec<Vec<ResolvedToken>> {
+/// Indent (columns) of agent-panel continuation rows, matching the renderer.
+const AGENT_ROW_INDENT: usize = 3;
+/// A lone terminal-title row word-wraps across at most this many physical rows.
+const AGENT_TITLE_WRAP_LINES: usize = 2;
+
+fn resolved_agent_rows(
+    app: &AppState,
+    entry: &AgentPanelEntry,
+    body_width: u16,
+) -> Vec<Vec<ResolvedToken>> {
     let label = entry
         .state_labels
         .get(agent_panel_status_key(entry.state, entry.seen))
         .map(String::as_str)
         .unwrap_or_else(|| state_label(entry.state, entry.seen));
+    let title_width = (body_width as usize).saturating_sub(AGENT_ROW_INDENT);
     tokens::agent_rows(&app.sidebar_agents, entry, label)
+        .into_iter()
+        .flat_map(|row| wrap_title_row(row, title_width))
+        .collect()
+}
+
+/// A row that is a single terminal-title token wraps across up to
+/// [`AGENT_TITLE_WRAP_LINES`] physical rows so long chat titles stay readable;
+/// every other row passes through unchanged.
+fn wrap_title_row(row: Vec<ResolvedToken>, width: usize) -> Vec<Vec<ResolvedToken>> {
+    let title = match row.as_slice() {
+        [token] => match &token.kind {
+            ResolvedTokenKind::TerminalTitle(text) => Some((text.clone(), token.style)),
+            _ => None,
+        },
+        _ => None,
+    };
+    let Some((text, style)) = title else {
+        return vec![row];
+    };
+    let lines = wrap_to_lines(&text, width, AGENT_TITLE_WRAP_LINES);
+    if lines.len() <= 1 {
+        return vec![row];
+    }
+    lines
+        .into_iter()
+        .map(|line| {
+            vec![ResolvedToken {
+                kind: ResolvedTokenKind::TerminalTitle(line),
+                style,
+            }]
+        })
+        .collect()
+}
+
+/// Word-wrap `text` into at most `max_lines` lines of display width `width`,
+/// breaking at spaces where possible and truncating the final line with an
+/// ellipsis when the text still overflows.
+fn wrap_to_lines(text: &str, width: usize, max_lines: usize) -> Vec<String> {
+    let text = text.trim();
+    if width == 0 || max_lines == 0 || text.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = Vec::new();
+    let mut rest = text;
+    while !rest.is_empty() && lines.len() < max_lines {
+        if lines.len() + 1 == max_lines || display_width(rest) <= width {
+            lines.push(truncate_end(rest, width));
+            return lines;
+        }
+        let mut end = 0;
+        let mut last_space = None;
+        let mut used = 0;
+        for (i, ch) in rest.char_indices() {
+            used += display_width(ch.encode_utf8(&mut [0u8; 4]));
+            if used > width {
+                break;
+            }
+            end = i + ch.len_utf8();
+            if ch.is_whitespace() {
+                last_space = Some(i);
+            }
+        }
+        let cut = last_space.unwrap_or(end).max(1);
+        lines.push(rest[..cut].trim_end().to_string());
+        rest = rest[cut..].trim_start();
+    }
+    lines
 }
 
 pub(crate) fn agent_entry_height_in_body(
     app: &AppState,
     entry: &AgentPanelEntry,
     body_height: u16,
+    body_width: u16,
 ) -> u16 {
-    (resolved_agent_rows(app, entry)
+    (resolved_agent_rows(app, entry, body_width)
         .len()
         .max(1)
         .min(u16::MAX as usize) as u16)
@@ -632,7 +710,7 @@ fn agent_panel_visible_count_from(app: &AppState, area: Rect, scroll: usize) -> 
     let mut used_rows = 0u16;
     let mut visible = 0usize;
     for (index, entry) in entries.iter().enumerate().skip(scroll) {
-        let height = agent_entry_height_in_body(app, entry, body.height);
+        let height = agent_entry_height_in_body(app, entry, body.height, body.width);
         if used_rows.saturating_add(height) > body.height {
             break;
         }
@@ -652,7 +730,8 @@ fn agent_panel_bottom_start(app: &AppState, area: Rect) -> usize {
     let mut start = entries.len();
     for (index, entry) in entries.iter().enumerate().rev() {
         let gap = agent_entry_gap(app, index, entries.len());
-        let needed = agent_entry_height_in_body(app, entry, body.height).saturating_add(gap);
+        let needed =
+            agent_entry_height_in_body(app, entry, body.height, body.width).saturating_add(gap);
         if used_rows.saturating_add(needed) > body.height {
             break;
         }
@@ -1419,7 +1498,7 @@ fn render_agent_detail(
     let body_bottom = body.y + body.height;
     for (index, detail) in details.iter().enumerate().skip(app.agent_panel_scroll) {
         let label_color = state_label_color(detail.state, detail.seen, p);
-        let rows = resolved_agent_rows(app, detail);
+        let rows = resolved_agent_rows(app, detail, body.width);
         let height = (rows.len().max(1) as u16).min(body.height);
         if row_y.saturating_add(height) > body_bottom {
             break;
@@ -1569,11 +1648,15 @@ mod tests {
         let body = agent_panel_body_rect(agent_area, false);
 
         let first = row_text(buffer, body.y, 25);
-        let second = row_text(buffer, body.y + 1, 25);
         assert!(first.contains("one"));
-        assert_eq!(second, "   pi");
-        assert!(!first.contains("working"));
-        assert!(!second.contains("working"));
+        // The default layout is compact: no redundant state text, and no agent
+        // label row (a lone-Claude sidebar leans on the chat title instead).
+        let panel: String = (0..body.height)
+            .map(|dy| row_text(buffer, body.y + dy, 25))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!panel.contains("working"));
+        assert!(!panel.contains("pi"));
 
         let workspace_x = find_symbol_x(buffer, body.y, body.width, "o");
         let workspace_style = buffer[(workspace_x, body.y)].style();
@@ -1581,13 +1664,6 @@ mod tests {
         assert!(workspace_style.add_modifier.contains(Modifier::BOLD));
         assert!(!workspace_style.add_modifier.contains(Modifier::DIM));
         assert_eq!(workspace_style.bg, Some(app.palette.surface_dim));
-
-        let agent_x = find_symbol_x(buffer, body.y + 1, body.width, "p");
-        let agent_style = buffer[(agent_x, body.y + 1)].style();
-        assert_eq!(agent_style.fg, Some(app.palette.overlay0));
-        assert!(agent_style.add_modifier.contains(Modifier::DIM));
-        assert!(!agent_style.add_modifier.contains(Modifier::BOLD));
-        assert_eq!(agent_style.bg, Some(app.palette.surface_dim));
     }
 
     #[test]
@@ -1936,9 +2012,10 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         assert_eq!(metrics.viewport_rows, 1);
         assert_eq!(metrics.max_offset_from_bottom, 0);
         let entry = agent_panel_entries(&app).pop().unwrap();
+        let body = agent_panel_body_rect(panel, false);
         assert_eq!(
-            agent_entry_height_in_body(&app, &entry, agent_panel_body_rect(panel, false).height),
-            agent_panel_body_rect(panel, false).height
+            agent_entry_height_in_body(&app, &entry, body.height, body.width),
+            body.height
         );
     }
 

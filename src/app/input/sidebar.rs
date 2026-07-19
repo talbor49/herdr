@@ -665,7 +665,20 @@ mod tests {
         app.state.selected = 0;
         app.state.mode = Mode::Terminal;
 
-        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 2, 16));
+        let cards = crate::ui::compute_agent_panel_card_areas(
+            &app.state,
+            &crate::terminal::TerminalRuntimeRegistry::new(),
+            app.state.view.sidebar_rect,
+        );
+        let target = *cards
+            .iter()
+            .find(|card| card.tab_idx == first_tab)
+            .expect("logs entry should have a card area");
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            target.rect.x + 1,
+            target.rect.y,
+        ));
 
         assert_eq!(app.state.workspaces[0].active_tab, 1);
         assert_eq!(
@@ -790,14 +803,19 @@ mod tests {
         app.state.selected = 0;
         app.state.mode = Mode::Terminal;
 
-        let (_, detail_area) = crate::ui::expanded_sidebar_sections(
+        let cards = crate::ui::compute_agent_panel_card_areas(
+            &app.state,
+            &crate::terminal::TerminalRuntimeRegistry::new(),
             app.state.view.sidebar_rect,
-            app.state.sidebar_section_split,
         );
+        let target = *cards
+            .iter()
+            .find(|card| card.ws_idx == 1)
+            .expect("second workspace should have a card area");
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
-            detail_area.x + 2,
-            detail_area.y + 6,
+            target.rect.x + 1,
+            target.rect.y,
         ));
 
         assert_eq!(app.state.active, Some(1));
@@ -820,6 +838,13 @@ mod tests {
             ("logs", Agent::Claude),
             ("review", Agent::Codex),
             ("ops", Agent::Gemini),
+            ("build", Agent::Claude),
+            ("deploy", Agent::Codex),
+            ("docs", Agent::Gemini),
+            ("test", Agent::Claude),
+            ("lint", Agent::Codex),
+            ("bench", Agent::Gemini),
+            ("audit", Agent::Claude),
         ] {
             let tab_idx = ws.test_add_tab(Some(tab_name));
             let pane_id = ws.tabs[tab_idx].root_pane;
@@ -974,9 +999,11 @@ mod tests {
         let titled_terminal_id = app.state.workspaces[0].tabs[titled_tab].panes[&titled_pane]
             .attached_terminal_id
             .clone();
+        // A long title wraps across two lines, so the entry is three rows tall
+        // (workspace/tab line + two wrapped title lines).
         set_chat_title(
             app.state.terminals.get_mut(&titled_terminal_id).unwrap(),
-            "Refactor auth flow",
+            "Refactor the authentication flow across every service",
         );
         app.state.active = Some(0);
         app.state.selected = 0;
@@ -995,7 +1022,7 @@ mod tests {
             "titled entry should occupy three rows"
         );
 
-        // Click the third (title) line — previously this row was not clickable.
+        // Click the last (wrapped title) line — the whole entry is clickable.
         let title_row = titled.rect.y + titled.rect.height - 1;
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),

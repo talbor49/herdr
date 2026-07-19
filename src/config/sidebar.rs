@@ -396,7 +396,6 @@ impl Default for AgentsSidebarConfig {
                     AgentSidebarToken::Workspace,
                     AgentSidebarToken::Tab,
                 ],
-                vec![AgentSidebarToken::Agent],
                 vec![AgentSidebarToken::TerminalTitleStripped],
             ],
             rows_by_agent: BTreeMap::new(),
@@ -447,7 +446,6 @@ mod tests {
                     AgentSidebarToken::Workspace,
                     AgentSidebarToken::Tab,
                 ],
-                vec![AgentSidebarToken::Agent],
                 vec![AgentSidebarToken::TerminalTitleStripped],
             ]
         );
