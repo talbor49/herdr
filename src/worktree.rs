@@ -18,6 +18,38 @@ pub(crate) struct ExistingWorktree {
     pub is_prunable: bool,
 }
 
+/// Best-effort "last used" signal for a worktree: the mtime of its HEAD reflog
+/// (`logs/HEAD`), which advances on commit/checkout/reset/merge/rebase but is not
+/// bumped by Herdr's background `git status` polling. Falls back to `HEAD` (moved
+/// on checkout) when reflogs are disabled. `None` when it can't be resolved.
+pub(crate) fn last_git_activity(checkout_path: &Path) -> Option<std::time::SystemTime> {
+    let git_dir = git_dir_for_checkout(checkout_path)?;
+    mtime(&git_dir.join("logs").join("HEAD")).or_else(|| mtime(&git_dir.join("HEAD")))
+}
+
+fn mtime(path: &Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path).ok()?.modified().ok()
+}
+
+fn git_dir_for_checkout(checkout_path: &Path) -> Option<PathBuf> {
+    let dot_git = checkout_path.join(".git");
+    if std::fs::metadata(&dot_git).ok()?.is_dir() {
+        return Some(dot_git);
+    }
+    // Linked worktrees store `.git` as a file: `gitdir: <worktree gitdir>`.
+    let gitdir = std::fs::read_to_string(&dot_git)
+        .ok()?
+        .strip_prefix("gitdir:")?
+        .trim()
+        .to_string();
+    let gitdir = Path::new(&gitdir);
+    Some(if gitdir.is_absolute() {
+        gitdir.to_path_buf()
+    } else {
+        checkout_path.join(gitdir)
+    })
+}
+
 pub(crate) fn generated_branch_slug(seed: u64) -> String {
     let adjectives = [
         "brave", "calm", "clear", "green", "lucky", "quiet", "rapid", "silver",
@@ -594,6 +626,42 @@ mod tests {
         run_git(&repo, &["add", "README.md"]);
         run_git(&repo, &["commit", "--quiet", "-m", "initial"]);
         repo
+    }
+
+    #[test]
+    fn last_git_activity_tracks_head_for_main_and_linked_worktrees() {
+        let repo = create_committed_repo("worktree-last-activity-repo");
+        let checkout = unique_temp_path("worktree-last-activity-checkout");
+        run_git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                "worktree/activity",
+                checkout.to_str().unwrap(),
+                "HEAD",
+            ],
+        );
+
+        let main_activity = last_git_activity(&repo).expect("main worktree HEAD mtime");
+        let linked_activity = last_git_activity(&checkout).expect("linked worktree HEAD mtime");
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        run_git(
+            &repo,
+            &["commit", "--quiet", "--allow-empty", "-m", "later"],
+        );
+        let main_after = last_git_activity(&repo).expect("main worktree HEAD mtime after commit");
+        assert!(main_after > main_activity);
+        assert!(main_after > linked_activity);
+
+        run_git(
+            &repo,
+            &["worktree", "remove", "--force", checkout.to_str().unwrap()],
+        );
+        let _ = std::fs::remove_dir_all(repo);
     }
 
     #[test]

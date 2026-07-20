@@ -177,7 +177,7 @@ impl App {
                 return;
             }
         };
-        let entries = list
+        let mut entries = list
             .into_iter()
             .filter(|entry| !entry.is_bare && !entry.is_prunable)
             .map(|entry| {
@@ -219,6 +219,9 @@ impl App {
                 }
             })
             .collect::<Vec<_>>();
+        entries.sort_by_cached_key(|entry| {
+            std::cmp::Reverse(crate::worktree::last_git_activity(&entry.path))
+        });
 
         if entries.is_empty() {
             self.state.config_diagnostic = Some("No Git worktrees found for this repo.".into());
