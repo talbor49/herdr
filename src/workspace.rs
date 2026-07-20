@@ -1065,7 +1065,7 @@ impl Workspace {
     ) -> Option<PathBuf> {
         self.tabs
             .first()
-            .and_then(|tab| tab.cwd_for_pane(tab.root_pane, terminals, terminal_runtimes))
+            .and_then(|tab| tab.follow_cwd_for_pane(tab.root_pane, terminals, terminal_runtimes))
             .or_else(|| Some(self.identity_cwd.clone()))
     }
 
