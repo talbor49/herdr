@@ -1204,7 +1204,13 @@ impl ContextMenuState {
             ContextMenuKind::GitWorkspace {
                 is_linked_worktree: true,
                 ..
-            } => &["Rename", "Close", "Delete worktree checkout..."],
+            } => &[
+                "Rename",
+                "Close",
+                "New worktree",
+                "Open worktree...",
+                "Delete worktree checkout...",
+            ],
             ContextMenuKind::GitWorkspace {
                 is_linked_worktree: false,
                 has_worktree_children: true,
@@ -2350,7 +2356,7 @@ mod tests {
     }
 
     #[test]
-    fn linked_worktree_context_menu_keeps_safe_close_and_explicit_remove() {
+    fn linked_worktree_context_menu_offers_worktree_actions_and_explicit_remove() {
         let menu = ContextMenuState {
             kind: ContextMenuKind::GitWorkspace {
                 ws_idx: 0,
@@ -2365,7 +2371,13 @@ mod tests {
 
         assert_eq!(
             menu.items(),
-            &["Rename", "Close", "Delete worktree checkout..."]
+            &[
+                "Rename",
+                "Close",
+                "New worktree",
+                "Open worktree...",
+                "Delete worktree checkout..."
+            ]
         );
     }
 

@@ -201,20 +201,8 @@ impl App {
                     "Herdr worktree actions require a path inside a Git work tree",
                 )
             })?;
-            if space.is_linked_worktree {
-                return Err(ApiFailure::new(
-                    "linked_worktree_source",
-                    "New and open worktree actions start from the repo parent workspace.",
-                ));
-            }
-            let source = WorktreeSource {
-                workspace_idx: self.find_parent_workspace_for_space(&space),
-                source_checkout_path: space.repo_root.clone(),
-                source_repo_root: space.repo_root,
-                repo_key: space.key,
-                repo_name: space.label,
-            };
-            return Ok(source);
+            let workspace_idx = self.list_source_workspace_idx_for_space(&space);
+            return Ok(worktree_source_from_space(space, workspace_idx, true));
         }
 
         let Some(ws_idx) = self.state.active.or_else(|| {
@@ -280,52 +268,9 @@ impl App {
     }
 
     fn worktree_source_from_workspace(&self, ws_idx: usize) -> Result<WorktreeSource, ApiFailure> {
-        let Some(ws) = self.state.workspaces.get(ws_idx) else {
-            return Err(ApiFailure::new(
-                "workspace_not_found",
-                "workspace not found",
-            ));
-        };
-        if let Some(membership) = ws.worktree_space() {
-            if membership.is_linked_worktree {
-                return Err(ApiFailure::new(
-                    "linked_worktree_source",
-                    "New and open worktree actions start from the repo parent workspace.",
-                ));
-            }
-            return Ok(WorktreeSource {
-                workspace_idx: Some(ws_idx),
-                source_checkout_path: membership.checkout_path.clone(),
-                source_repo_root: membership.repo_root.clone(),
-                repo_key: membership.key.clone(),
-                repo_name: membership.label.clone(),
-            });
-        }
-
-        let git_space = ws.git_space().cloned().or_else(|| {
-            ws.resolved_identity_cwd_from(&self.state.terminals, &self.terminal_runtimes)
-                .as_deref()
-                .and_then(crate::workspace::git_space_metadata)
-        });
-        let Some(space) = git_space else {
-            return Err(ApiFailure::new(
-                "not_git_worktree",
-                "Herdr worktree actions require a workspace inside a Git work tree",
-            ));
-        };
-        if space.is_linked_worktree {
-            return Err(ApiFailure::new(
-                "linked_worktree_source",
-                "New and open worktree actions start from the repo parent workspace.",
-            ));
-        }
-        Ok(WorktreeSource {
-            workspace_idx: Some(ws_idx),
-            source_checkout_path: space.repo_root.clone(),
-            source_repo_root: space.repo_root,
-            repo_key: space.key,
-            repo_name: space.label,
-        })
+        // New/open worktree actions re-originate a linked worktree to its repo
+        // parent, identical to the list flow.
+        self.worktree_list_source_from_workspace(ws_idx)
     }
 
     fn worktree_list_source_from_workspace(
@@ -424,7 +369,7 @@ impl App {
         }
     }
 
-    fn find_parent_workspace_by_key(&self, repo_key: &str) -> Option<usize> {
+    pub(crate) fn find_parent_workspace_by_key(&self, repo_key: &str) -> Option<usize> {
         self.state.workspaces.iter().position(|ws| {
             ws.worktree_space()
                 .is_some_and(|space| space.key == repo_key && !space.is_linked_worktree)

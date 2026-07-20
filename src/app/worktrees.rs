@@ -28,28 +28,11 @@ impl App {
             return Err("Workspace not found.".into());
         };
         let existing_membership = ws.worktree_space().cloned();
-        if existing_membership
-            .as_ref()
-            .is_some_and(|membership| membership.is_linked_worktree)
-        {
-            return Err(
-                "New and open worktree actions start from the repo parent workspace.".into(),
-            );
-        }
-
         let git_space = ws.git_space().cloned().or_else(|| {
             ws.resolved_identity_cwd_from(&self.state.terminals, &self.terminal_runtimes)
                 .as_deref()
                 .and_then(crate::workspace::git_space_metadata)
         });
-        if git_space
-            .as_ref()
-            .is_some_and(|metadata| metadata.is_linked_worktree)
-        {
-            return Err(
-                "New and open worktree actions start from the repo parent workspace.".into(),
-            );
-        }
 
         let space = existing_membership
             .as_ref()
@@ -65,6 +48,31 @@ impl App {
             .ok_or_else(|| {
                 "Herdr worktree actions require a workspace inside a Git work tree.".to_string()
             })?;
+
+        if space.is_linked_worktree {
+            // Re-originate to the repo parent so new/open worktree actions run
+            // against the origination workspace, not the linked checkout. For a
+            // Herdr-managed worktree the parent root is the membership repo_root;
+            // ponytail: a linked checkout without membership keeps its own root
+            // (git still lists the whole repo), only the linked labels look off.
+            let repo_root = existing_membership
+                .as_ref()
+                .map(|membership| membership.repo_root.clone())
+                .unwrap_or_else(|| space.repo_root.clone());
+            let parent_space = crate::workspace::GitSpaceMetadata {
+                key: space.key.clone(),
+                checkout_key: repo_root.display().to_string(),
+                label: space.label.clone(),
+                repo_root: repo_root.clone(),
+                is_linked_worktree: false,
+            };
+            let source_workspace_id = self
+                .find_parent_workspace_by_key(&space.key)
+                .map(|idx| self.state.workspaces[idx].id.clone())
+                .unwrap_or_else(|| self.state.workspaces[ws_idx].id.clone());
+            return Ok((None, parent_space, repo_root, source_workspace_id));
+        }
+
         let source_checkout_path = existing_membership
             .as_ref()
             .map(|membership| membership.checkout_path.clone())
@@ -1603,7 +1611,7 @@ mod tests {
     }
 
     #[test]
-    fn worktree_create_and_open_dialogs_reject_linked_child_source() {
+    fn worktree_create_dialog_reorigins_from_linked_child_to_parent() {
         let mut app = app_for_worktree_tests();
         app.state.workspaces = vec![crate::workspace::Workspace::test_new("issue")];
         app.state.mode = Mode::Navigate;
@@ -1617,21 +1625,68 @@ mod tests {
 
         app.open_new_linked_worktree_dialog(0);
 
-        assert_eq!(app.state.mode, Mode::Navigate);
-        assert!(app.state.worktree_create.is_none());
+        assert_eq!(app.state.mode, Mode::NewLinkedWorktree);
+        assert_eq!(app.state.config_diagnostic, None);
+        let create = app.state.worktree_create.as_ref().expect("create dialog");
         assert_eq!(
-            app.state.config_diagnostic.as_deref(),
-            Some("New and open worktree actions start from the repo parent workspace.")
+            create.source_repo_root,
+            std::path::PathBuf::from("/repo/herdr")
+        );
+        assert_eq!(
+            create.source_checkout_path,
+            std::path::PathBuf::from("/repo/herdr")
+        );
+        assert_eq!(create.repo_key, "repo-key");
+        assert!(create.source_existing_membership.is_none());
+    }
+
+    #[test]
+    fn open_existing_worktree_dialog_lists_repo_from_linked_child() {
+        let repo = create_committed_repo("app-open-from-linked-repo");
+        let checkout = unique_temp_path("app-open-from-linked-checkout");
+        run_git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                "worktree/from-linked",
+                checkout.to_str().unwrap(),
+                "HEAD",
+            ],
         );
 
-        app.state.config_diagnostic = None;
+        let mut app = app_for_worktree_tests();
+        app.state.workspaces = vec![crate::workspace::Workspace::test_new("child")];
+        app.state.workspaces[0].worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
+            key: "repo-key".into(),
+            label: "herdr".into(),
+            repo_root: repo.clone(),
+            checkout_path: checkout.clone(),
+            is_linked_worktree: true,
+        });
+        app.state.mode = Mode::Navigate;
+
         app.open_existing_worktree_dialog(0);
 
-        assert!(app.state.worktree_open.is_none());
-        assert_eq!(
-            app.state.config_diagnostic.as_deref(),
-            Some("New and open worktree actions start from the repo parent workspace.")
+        assert_eq!(app.state.config_diagnostic, None);
+        let open = app.state.worktree_open.as_ref().expect("open dialog");
+        assert_eq!(open.source_repo_root, repo);
+        let has_entry = |path: &std::path::Path| {
+            let canonical = crate::worktree::canonical_or_original(path);
+            open.entries
+                .iter()
+                .any(|entry| crate::worktree::canonical_or_original(&entry.path) == canonical)
+        };
+        assert!(has_entry(&repo), "expected parent checkout in entries");
+        assert!(has_entry(&checkout), "expected linked child in entries");
+
+        run_git(
+            &repo,
+            &["worktree", "remove", "--force", checkout.to_str().unwrap()],
         );
+        let _ = std::fs::remove_dir_all(repo);
     }
 
     #[test]
