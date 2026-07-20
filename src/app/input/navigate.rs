@@ -454,9 +454,6 @@ impl App {
             .get(ws_idx)
             .is_some_and(|ws| ws.tabs.len() <= 1)
         {
-            if self.state.confirm_implicit_worktree_group_close(ws_idx) {
-                return true;
-            }
             self.close_workspace_idx_via_api(ws_idx);
             return false;
         }
@@ -2955,51 +2952,51 @@ navigate_pane_down = "ctrl+j"
     }
 
     #[test]
-    fn prefix_close_pane_last_parent_group_pane_opens_confirmation() {
+    fn prefix_close_pane_last_parent_group_pane_closes_workspace_only() {
         let mut state = state_with_workspaces(&["main", "issue"]);
         mark_worktree_space_member(&mut state, 0, "repo-key");
         mark_worktree_space_member(&mut state, 1, "repo-key");
-        state.selected = 1;
+        state.selected = 0;
         state.active = Some(0);
         state.mode = Mode::Navigate;
 
         execute_navigate_action(&mut state, NavigateAction::ClosePane);
 
-        assert_eq!(state.selected, 0);
-        assert_eq!(state.mode, Mode::ConfirmClose);
-        assert_eq!(state.workspaces.len(), 2);
+        assert_ne!(state.mode, Mode::ConfirmClose);
+        assert_eq!(state.workspaces.len(), 1);
+        assert_eq!(state.workspaces[0].display_name(), "issue");
     }
 
     #[test]
-    fn tui_close_tab_last_parent_group_workspace_opens_confirmation_via_api() {
+    fn tui_close_tab_last_parent_group_workspace_closes_workspace_only_via_api() {
         let mut app = app_with_test_workspaces(&["main", "issue"]);
         mark_worktree_space_member(&mut app.state, 0, "repo-key");
         mark_worktree_space_member(&mut app.state, 1, "repo-key");
         app.state.active = Some(0);
-        app.state.selected = 1;
+        app.state.selected = 0;
         app.state.mode = Mode::Navigate;
 
         app.execute_tui_navigate_action(NavigateAction::CloseTab, ActionContext::Navigate);
 
-        assert_eq!(app.state.selected, 0);
-        assert_eq!(app.state.mode, Mode::ConfirmClose);
-        assert_eq!(app.state.workspaces.len(), 2);
+        assert_ne!(app.state.mode, Mode::ConfirmClose);
+        assert_eq!(app.state.workspaces.len(), 1);
+        assert_eq!(app.state.workspaces[0].display_name(), "issue");
     }
 
     #[test]
-    fn tui_close_pane_last_parent_group_pane_opens_confirmation_via_api() {
+    fn tui_close_pane_last_parent_group_pane_closes_workspace_only_via_api() {
         let mut app = app_with_test_workspaces(&["main", "issue"]);
         mark_worktree_space_member(&mut app.state, 0, "repo-key");
         mark_worktree_space_member(&mut app.state, 1, "repo-key");
         app.state.active = Some(0);
-        app.state.selected = 1;
+        app.state.selected = 0;
         app.state.mode = Mode::Navigate;
 
         app.execute_tui_navigate_action(NavigateAction::ClosePane, ActionContext::Navigate);
 
-        assert_eq!(app.state.selected, 0);
-        assert_eq!(app.state.mode, Mode::ConfirmClose);
-        assert_eq!(app.state.workspaces.len(), 2);
+        assert_ne!(app.state.mode, Mode::ConfirmClose);
+        assert_eq!(app.state.workspaces.len(), 1);
+        assert_eq!(app.state.workspaces[0].display_name(), "issue");
     }
 
     #[cfg(unix)]

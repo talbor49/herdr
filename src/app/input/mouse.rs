@@ -3414,7 +3414,7 @@ mod tests {
     }
 
     #[test]
-    fn clicking_pane_context_menu_close_last_parent_group_pane_keeps_confirmation_mode() {
+    fn clicking_pane_context_menu_close_last_parent_worktree_pane_closes_workspace_only() {
         let mut app = app_for_mouse_test();
         let mut parent = Workspace::test_new("main");
         let pane_id = parent.tabs[0].root_pane;
@@ -3423,7 +3423,7 @@ mod tests {
         mark_worktree_space_member(&mut child, 1, "repo-key");
         app.state.workspaces = vec![parent, child];
         app.state.active = Some(0);
-        app.state.selected = 1;
+        app.state.selected = 0;
         app.state.mode = Mode::Terminal;
 
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
@@ -3458,9 +3458,9 @@ mod tests {
             menu.y + 1 + close_idx as u16,
         ));
 
-        assert_eq!(app.state.selected, 0);
-        assert_eq!(app.state.mode, Mode::ConfirmClose);
-        assert_eq!(app.state.workspaces.len(), 2);
+        assert_ne!(app.state.mode, Mode::ConfirmClose);
+        assert_eq!(app.state.workspaces.len(), 1);
+        assert_eq!(app.state.workspaces[0].display_name(), "issue");
         assert!(app.state.context_menu.is_none());
     }
 
