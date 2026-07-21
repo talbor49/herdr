@@ -202,6 +202,27 @@ fn repeat_key_identity(
     (key.code, key.modifiers)
 }
 
+/// Held-key auto-repeat (`KeyEventKind::Repeat`) is routed to the terminal, but
+/// outside terminal mode we only honor repeats for movement/editing keys —
+/// navigating a list or holding backspace should repeat, while one-shot commands
+/// (Enter, Esc, letter shortcuts) must not re-fire when a key is held.
+fn is_repeatable_non_terminal_key(key: &crate::input::TerminalKey) -> bool {
+    use crossterm::event::KeyCode;
+    matches!(
+        key.code,
+        KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::Left
+            | KeyCode::Right
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+            | KeyCode::Home
+            | KeyCode::End
+            | KeyCode::Backspace
+            | KeyCode::Delete
+    )
+}
+
 fn auto_updates_enabled(no_session: bool) -> bool {
     !no_session && !cfg!(debug_assertions)
 }
@@ -1589,14 +1610,16 @@ impl App {
                             }
                         }
                         crossterm::event::KeyEventKind::Repeat => {
-                            if (self.state.popup_pane.is_some()
-                                || self.state.mode == Mode::Terminal)
-                                && !self.suppressed_repeat_keys.contains(&key_id)
+                            if self.state.popup_pane.is_some() || self.state.mode == Mode::Terminal
                             {
-                                self.handle_terminal_key_headless(key);
+                                if !self.suppressed_repeat_keys.contains(&key_id) {
+                                    self.handle_terminal_key_headless(key);
+                                }
+                            } else if is_repeatable_non_terminal_key(&key) {
+                                // Let held movement/editing keys repeat in modals,
+                                // settings, and the sidebar (list navigation, backspace).
+                                self.handle_non_terminal_key_headless(key);
                             }
-                            // Repeats in non-terminal modes are ignored
-                            // (same as monolithic behavior).
                         }
                         crossterm::event::KeyEventKind::Release => {
                             self.suppressed_repeat_keys.remove(&key_id);
@@ -3506,6 +3529,34 @@ mod tests {
         assert!(!handled);
         assert_eq!(app.state.mode, Mode::ReleaseNotes);
         assert!(app.state.release_notes.is_some());
+    }
+
+    #[tokio::test]
+    async fn repeat_navigation_keys_are_delivered_outside_terminal_mode() {
+        let mut app = test_app();
+        app.state.mode = Mode::ReleaseNotes;
+        app.state.release_notes = Some(release_notes_state());
+
+        // A held movement key repeats so lists/modals keep scrolling on hold ...
+        let down_repeat = app
+            .handle_raw_input_event(raw_key(
+                KeyCode::Down,
+                KeyModifiers::empty(),
+                KeyEventKind::Repeat,
+            ))
+            .await;
+        assert!(down_repeat);
+
+        // ... but a held one-shot key (Enter) still must not re-fire.
+        let enter_repeat = app
+            .handle_raw_input_event(raw_key(
+                KeyCode::Enter,
+                KeyModifiers::empty(),
+                KeyEventKind::Repeat,
+            ))
+            .await;
+        assert!(!enter_repeat);
+        assert_eq!(app.state.mode, Mode::ReleaseNotes);
     }
 
     #[tokio::test]
