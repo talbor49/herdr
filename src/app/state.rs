@@ -823,6 +823,10 @@ pub enum Mode {
 }
 
 impl Mode {
+    pub(crate) fn mouse_motion_changes_view(self) -> bool {
+        matches!(self, Self::GlobalMenu | Self::ContextMenu | Self::Navigator)
+    }
+
     /// Whether keys in this mode are commands/navigation (an ASCII input source is wanted) rather
     /// than free text. This is an explicit **allowlist** of the prefix command/navigation realm:
     /// any mode NOT listed defaults to leaving the user's IME alone (the safe default), so adding a
@@ -830,8 +834,9 @@ impl Mode {
     /// `sync_prefix_input_source` (gated by `switch_ascii_input_source_in_prefix`) so multi-level
     /// prefix commands keep ASCII until they return to the terminal.
     ///
-    /// Known limitation: `Navigator`'s search box is also held on ASCII, since this `Mode`-level
-    /// predicate can't see `search_focused` (non-ASCII filtering there would need a runtime check).
+    /// Known limitation: the search boxes in `Navigator` and `KeybindHelp` are also held on ASCII,
+    /// since this `Mode`-level predicate can't see `search_focused` (non-ASCII filtering there
+    /// would need a runtime check).
     pub(crate) fn wants_ascii_input(self) -> bool {
         matches!(
             self,
@@ -1035,7 +1040,7 @@ impl ExperimentSetting {
         match self {
             Self::PaneHistory => "pane screen history",
             Self::SwitchAsciiInputSourceInPrefix => {
-                "switch to ascii input source in prefix (macOS)"
+                "switch to ascii input source in prefix (macOS/Windows)"
             }
         }
     }
@@ -1145,10 +1150,16 @@ pub struct SettingsState {
     pub original_theme: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WorkspaceDropTarget {
+    Before(usize),
+    End,
+}
+
 pub(crate) enum DragTarget {
     WorkspaceReorder {
         source_ws_idx: usize,
-        insert_idx: Option<usize>,
+        drop_target: Option<WorkspaceDropTarget>,
     },
     TabReorder {
         ws_idx: usize,
@@ -1396,8 +1407,11 @@ pub struct ProductAnnouncementState {
     pub preview: bool,
 }
 
+#[derive(Default)]
 pub struct KeybindHelpState {
     pub scroll: u16,
+    pub query: String,
+    pub search_focused: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1836,7 +1850,7 @@ impl AppState {
             name_input_replace_on_type: false,
             release_notes: None,
             product_announcement: None,
-            keybind_help: KeybindHelpState { scroll: 0 },
+            keybind_help: KeybindHelpState::default(),
             navigator: NavigatorState::default(),
             copy_mode: None,
             workspace_scroll: 0,
@@ -2222,16 +2236,11 @@ impl AppState {
             match &drag.target {
                 DragTarget::WorkspaceReorder {
                     source_ws_idx,
-                    insert_idx,
+                    drop_target,
                 } => {
                     assert_workspace_index(*source_ws_idx, "workspace drag source");
-                    if let Some(insert_idx) = insert_idx {
-                        assert!(
-                            *insert_idx <= self.workspaces.len(),
-                            "workspace drag insert index {} out of bounds for {} workspaces",
-                            insert_idx,
-                            self.workspaces.len()
-                        );
+                    if let Some(WorkspaceDropTarget::Before(ws_idx)) = drop_target {
+                        assert_workspace_index(*ws_idx, "workspace drag target");
                     }
                 }
                 DragTarget::TabReorder {

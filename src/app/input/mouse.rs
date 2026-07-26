@@ -43,6 +43,9 @@ pub(super) enum MouseAction {
         source_ws_idx: usize,
         insert_idx: usize,
     },
+    MoveWorkspaceBlock {
+        params: crate::api::schema::WorkspaceMoveBlockParams,
+    },
     MoveTab {
         ws_idx: usize,
         source_tab_idx: usize,
@@ -561,9 +564,8 @@ impl AppState {
                         self.view.workspace_card_areas.clone()
                     };
                     if let Some(card) = cards.iter().find(|card| {
-                        mouse.row == card.rect.y
-                            && mouse.column == card.rect.x
-                            && mouse.column < card.rect.x + card.rect.width
+                        let chevron = crate::ui::workspace_group_chevron_rect(card);
+                        mouse.row == chevron.y && mouse.column == chevron.x && chevron.width > 0
                     }) {
                         if let Some((key, collapsed)) =
                             crate::ui::workspace_parent_group_state(self, card.ws_idx)
@@ -627,13 +629,7 @@ impl AppState {
                     if self.forward_pane_mouse_button(terminal_runtimes, &info, mouse) {
                         self.selection = None;
                         self.selection_autoscroll = None;
-                        if let Some(ws_idx) = self.active {
-                            return Some(MouseAction::FocusPane {
-                                ws_idx,
-                                pane_id: info.id,
-                            });
-                        }
-                        return None;
+                        return self.mouse_pane_focus_action(info.id);
                     }
 
                     let (row, col) = (
@@ -646,12 +642,7 @@ impl AppState {
                         col,
                         self.pane_scroll_metrics(terminal_runtimes, info.id),
                     ));
-                    if let Some(ws_idx) = self.active {
-                        return Some(MouseAction::FocusPane {
-                            ws_idx,
-                            pane_id: info.id,
-                        });
-                    }
+                    return self.mouse_pane_focus_action(info.id);
                 } else if let Some(info) = self.view.pane_infos.iter().find(|p| {
                     mouse.column >= p.rect.x
                         && mouse.column < p.rect.x + p.rect.width
@@ -662,12 +653,7 @@ impl AppState {
                     if self.mode != Mode::Terminal {
                         self.mode = Mode::Terminal;
                     }
-                    if let Some(ws_idx) = self.active {
-                        return Some(MouseAction::FocusPane {
-                            ws_idx,
-                            pane_id: id,
-                        });
-                    }
+                    return self.mouse_pane_focus_action(id);
                 }
             }
 
@@ -687,21 +673,21 @@ impl AppState {
                     }
                 }
 
-                let workspace_drop_index = self.workspace_drop_index_at_row(mouse.row);
+                let workspace_drop_target = self.workspace_drop_target_at_row(mouse.row);
                 let tab_drop_index = self.tab_drop_index_at(mouse.column, mouse.row);
                 if self.drag.is_none() {
                     if let Some(press) = &self.workspace_press {
                         let delta_col = mouse.column.abs_diff(press.start_col);
                         let delta_row = mouse.row.abs_diff(press.start_row);
-                        let can_reorder = self
-                            .workspaces
-                            .get(press.ws_idx)
-                            .is_some_and(|ws| ws.worktree_space().is_none());
+                        let can_reorder = self.workspaces.get(press.ws_idx).is_some_and(|ws| {
+                            ws.worktree_space()
+                                .is_none_or(|space| !space.is_linked_worktree)
+                        });
                         if can_reorder && delta_col.max(delta_row) >= WORKSPACE_DRAG_THRESHOLD {
                             self.drag = Some(DragState {
                                 target: DragTarget::WorkspaceReorder {
                                     source_ws_idx: press.ws_idx,
-                                    insert_idx: workspace_drop_index,
+                                    drop_target: workspace_drop_target,
                                 },
                             });
                         }
@@ -721,10 +707,10 @@ impl AppState {
                 }
 
                 if let Some(DragState {
-                    target: DragTarget::WorkspaceReorder { insert_idx, .. },
+                    target: DragTarget::WorkspaceReorder { drop_target, .. },
                 }) = &mut self.drag
                 {
-                    *insert_idx = workspace_drop_index;
+                    *drop_target = workspace_drop_target;
                 } else if let Some(DragState {
                     target:
                         DragTarget::TabReorder {
@@ -812,7 +798,7 @@ impl AppState {
 
             MouseEventKind::Up(MouseButton::Left) => {
                 // Mouse-up either finishes a drag selection or releases after a
-                // double-click copy; the latter is already finalized.
+                // double-click word selection; the latter is already finalized.
                 if let Some(selection) = self.selection.as_ref() {
                     let was_click = selection.was_just_click();
                     let was_finalized = selection.is_finalized();
@@ -824,7 +810,7 @@ impl AppState {
                     if was_click {
                         self.selection = None;
                     } else if was_finalized {
-                        // Double-click copy already finalized this selection.
+                        // Double-click already finalized this word selection.
                     } else if self.copy_on_select {
                         self.copy_selection(terminal_runtimes);
                     } else if let Some(selection) = self.selection.as_mut() {
@@ -853,13 +839,33 @@ impl AppState {
                         target:
                             DragTarget::WorkspaceReorder {
                                 source_ws_idx,
-                                insert_idx: Some(insert_idx),
+                                drop_target: Some(drop_target),
                             },
                     }) => {
-                        return Some(MouseAction::MoveWorkspace {
-                            source_ws_idx,
-                            insert_idx,
-                        });
+                        if let Some(params) =
+                            self.workspace_move_block_params(source_ws_idx, drop_target)
+                        {
+                            if self
+                                .workspaces
+                                .get(source_ws_idx)
+                                .is_some_and(|workspace| workspace.worktree_space().is_some())
+                            {
+                                return Some(MouseAction::MoveWorkspaceBlock { params });
+                            }
+                            let insert_idx = params
+                                .before_workspace_id
+                                .as_ref()
+                                .and_then(|id| {
+                                    self.workspaces
+                                        .iter()
+                                        .position(|workspace| workspace.id == *id)
+                                })
+                                .unwrap_or(self.workspaces.len());
+                            return Some(MouseAction::MoveWorkspace {
+                                source_ws_idx,
+                                insert_idx,
+                            });
+                        }
                     }
                     Some(DragState {
                         target:
@@ -1412,6 +1418,16 @@ impl AppState {
     pub(super) fn pane_mouse_target(&self, col: u16, row: u16) -> Option<&PaneInfo> {
         self.pane_at(col, row)
             .or_else(|| self.pane_frame_at(col, row))
+    }
+
+    fn mouse_pane_focus_action(&self, pane_id: crate::layout::PaneId) -> Option<MouseAction> {
+        let ws_idx = self.active?;
+        (self
+            .workspaces
+            .get(ws_idx)
+            .and_then(|workspace| workspace.focused_pane_id())
+            != Some(pane_id))
+        .then_some(MouseAction::FocusPane { ws_idx, pane_id })
     }
 
     pub(crate) fn pane_info_by_id(&self, pane_id: crate::layout::PaneId) -> Option<&PaneInfo> {
@@ -2066,6 +2082,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn captured_left_press_focuses_target_before_forwarding() {
+        let mut app = app_for_mouse_test();
+        let mut ws = Workspace::test_new("test");
+        let source = ws.tabs[0].root_pane;
+        let target = ws.test_split(Direction::Horizontal);
+        ws.tabs[0].layout.focus_pane(source);
+        app.state.workspaces = vec![ws];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+        let info = app
+            .state
+            .pane_info_by_id(target)
+            .expect("target pane info")
+            .clone();
+        let (runtime, mut input_rx) =
+            crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
+                info.inner_rect.width,
+                info.inner_rect.height,
+                0,
+                b"\x1b[?1002h\x1b[?1006h",
+                4,
+            );
+        app.state.insert_test_runtime(target, runtime);
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            info.inner_rect.x + 1,
+            info.inner_rect.y + 1,
+        ));
+
+        assert_eq!(app.state.workspaces[0].focused_pane_id(), Some(target));
+        assert_eq!(
+            input_rx.try_recv().expect("forwarded captured left press"),
+            Bytes::from_static(b"\x1b[<0;2;2M")
+        );
+    }
+
+    #[tokio::test]
     async fn pane_mouse_only_forwards_moved_events_for_any_motion_apps() {
         let mut app = app_for_mouse_test();
         let mut ws = Workspace::test_new("test");
@@ -2336,6 +2391,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn normal_right_click_keeps_focus_and_exposes_swap_for_reporting_pane() {
+        let mut app = app_for_mouse_test();
+        let mut ws = Workspace::test_new("test");
+        let source = ws.tabs[0].root_pane;
+        let target = ws.test_split(Direction::Horizontal);
+        ws.tabs[0].layout.focus_pane(source);
+        app.state.workspaces = vec![ws];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 100, 20));
+        let target_info = app
+            .state
+            .pane_info_by_id(target)
+            .expect("target pane info")
+            .clone();
+        let (runtime, mut input_rx) =
+            crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
+                target_info.inner_rect.width,
+                target_info.inner_rect.height,
+                0,
+                b"\x1b[?1002h\x1b[?1006h",
+                4,
+            );
+        app.state.insert_test_runtime(target, runtime);
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Right),
+            target_info.inner_rect.x,
+            target_info.inner_rect.y,
+        ));
+
+        assert!(input_rx.try_recv().is_err());
+        assert_eq!(app.state.workspaces[0].focused_pane_id(), Some(source));
+        let menu = app.state.context_menu.as_mut().expect("pane context menu");
+        assert!(matches!(
+            menu.kind,
+            ContextMenuKind::Pane {
+                pane_id,
+                source_pane_id: Some(source_pane_id),
+                ..
+            } if pane_id == target && source_pane_id == source
+        ));
+        assert!(menu.items().contains(&"Swap with focused pane"));
+    }
+
+    #[tokio::test]
     async fn right_click_passthrough_requires_exact_modifier_match() {
         let mut app = app_for_mouse_test();
         let mut ws = Workspace::test_new("test");
@@ -2357,6 +2458,7 @@ mod tests {
         app.state.selected = 0;
         app.state.mode = Mode::Terminal;
         app.state.view.pane_infos = pane_infos;
+
         app.state.right_click_passthrough_modifiers = Some(KeyModifiers::CONTROL);
 
         let col = info.inner_rect.x + 2;
