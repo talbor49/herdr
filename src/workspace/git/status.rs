@@ -6,9 +6,9 @@ use crate::workspace::{GitSpaceMetadata, WorkspaceGitStatusSnapshot};
 use super::{
     config::{read_branch_config, upstream_full_ref},
     discovery::{
-        canonicalize_best_effort_path, fallback_label_from_cwd, git_ref_storage_is_reftable,
-        git_rev_parse_verify, git_space_metadata_from_info, git_symbolic_head_full,
-        git_worktree_info, read_ref_oid, GitWorktreeInfo,
+        canonicalize_best_effort_path, checkout_label_from_space, fallback_label_from_cwd,
+        git_ref_storage_is_reftable, git_rev_parse_verify, git_space_metadata_from_info,
+        git_symbolic_head_full, git_worktree_info, read_ref_oid, GitWorktreeInfo,
     },
 };
 
@@ -113,7 +113,7 @@ pub fn git_status_snapshot_for_cwd_with_demand(
         );
     };
     let space = git_space_metadata_from_info(&info);
-    let auto_label = space.label.clone();
+    let auto_label = checkout_label_from_space(&space);
 
     if !demand.ahead_behind {
         let branch = demand

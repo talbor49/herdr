@@ -8,8 +8,8 @@ mod test_support;
 
 pub use self::{
     discovery::{
-        derive_label_from_cwd, fallback_label_from_cwd, git_branch, git_space_metadata,
-        GitSpaceMetadata,
+        checkout_label_from_space, derive_label_from_cwd, fallback_label_from_cwd, git_branch,
+        git_space_metadata, GitSpaceMetadata,
     },
     status::{
         git_status_cache_key, git_status_cache_key_for_space,

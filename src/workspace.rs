@@ -18,6 +18,7 @@ mod aggregate;
 mod git;
 mod tab;
 
+use self::git::checkout_label_from_space;
 #[cfg(test)]
 use self::git::git_ahead_behind;
 use self::git::git_status_cache_key_for_space;
@@ -68,7 +69,7 @@ pub(crate) fn discover_workspace_git_identity(
     let space = git_space_metadata(cwd);
     let auto_label = space
         .as_ref()
-        .map(|space| space.label.clone())
+        .map(checkout_label_from_space)
         .unwrap_or_else(|| fallback_label_from_cwd(cwd));
     let status_cache_key = space
         .as_ref()
