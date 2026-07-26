@@ -8,8 +8,9 @@ description: >-
   changes", "merge upstream into my branch", "catch up with ogulcancelik", or
   asks to bring the latest herdr changes into their branch — even if they don't
   say the word "upstream". It walks the fetch → fast-forward master → merge →
-  resolve conflicts (preserving local features) → validate → commit flow, and
-  knows the conflict patterns and gotchas specific to this fork.
+  resolve conflicts (preserving local features) → validate → commit → report
+  what's new flow, and knows the conflict patterns and gotchas specific to this
+  fork.
 ---
 
 # Update from upstream
@@ -99,6 +100,65 @@ grep -rn -E '^(<<<<<<<|\|\|\|\|\|\|\||=======$|>>>>>>>)' src/ tests/   # find ev
 
 Resolve, then `git add <file>` each one. Verify no markers survive before building.
 
+#### 5b. Audit for silently dropped local code — do not skip this
+
+Conflict markers only appear where both sides touched the *same* lines. When upstream
+rewrites a region that local merely added to, or deletes something local still depends
+on, git resolves it silently and the local change vanishes with no marker and often no
+compile error. This has really happened here: upstream deleted
+`Tab::follow_cwd_for_pane` (its callers moved into `app::creation`), and the auto-merge
+took that deletion even though a local commit had added a third caller in
+`workspace.rs`.
+
+Run this **before committing** (during the merge, so `HEAD` is still the pre-merge
+local tip and `MERGE_HEAD` is upstream). It lists every line local added that is no
+longer anywhere in the merged tree:
+
+```bash
+python3 - <<'PY'
+import subprocess, collections
+def sh(*a): return subprocess.run(["git",*a],capture_output=True,text=True).stdout.strip()
+if sh("rev-parse","-q","--verify","MERGE_HEAD"):        # mid-merge, not yet committed
+    base, local = sh("merge-base","HEAD","MERGE_HEAD"), "HEAD"
+else:                                                   # merge already committed
+    base, local = sh("merge-base","HEAD^1","HEAD^2"), "HEAD^1"
+print(f"base={base} local={local}")
+diff = sh("diff","-U0",base,local,"--","src/","tests/")
+cur, added = None, collections.defaultdict(list)
+for line in diff.splitlines():
+    if line.startswith("+++ b/"): cur = line[6:]
+    elif line.startswith("+") and cur and not line.startswith("+++"):
+        s = line[1:].strip()
+        if len(s) > 12 and s not in ("{","}"): added[cur].append(s)
+total = 0
+for f in sorted(added):
+    try: body = open(f).read()
+    except FileNotFoundError: print(f"\n### {f}  <FILE GONE>"); continue
+    gone = [s for s in added[f] if s not in body]
+    if not gone: continue
+    print(f"\n### {f}  ({len(gone)} missing)")
+    for s in gone[:15]: print("   -", s[:116])
+    total += len(gone)
+print(f"\nTOTAL missing local-added lines: {total}")
+PY
+```
+
+Every hit is one of exactly two things, and you must account for each:
+
+1. **A line you rewrote yourself while resolving** — renamed symbol, merged import list,
+   reindented call. Expected; tick it off.
+2. **A local change the merge silently dropped.** Fix it: find where upstream moved the
+   functionality (`git show <upstream-commit>` for the commit that deleted it) and port
+   the local change onto the new shape.
+
+Don't just eyeball the count — walk the list. A tidy run is ~10-15 hits, all category 1.
+If you can't explain a hit, it's category 2.
+
+When porting into a new location, check the layering first: upstream often moves a helper
+somewhere the local caller can't legally reach (e.g. `pub(super)` inside `app/` when the
+caller lives in `workspace.rs`, which `app/` depends on). Inlining the body at the single
+remaining call site beats widening upstream's visibility or reverting their deletion.
+
 ### 6. Validate
 
 Run these in order — stop and fix at the first real failure:
@@ -176,6 +236,44 @@ cargo install --path .
 On this macOS 27 machine the vendored libghostty-vt build works through the `zig`
 wrapper under `~/.local` (see the `herdr-macos27-zig-build` memory) — no env var
 needed, `cargo install` finds `zig` on PATH.
+
+### 9. Report what's new
+
+Always finish with a themed digest of what came in. Don't paste `git log --oneline`
+and call it a summary — group by what changed and why the user would care.
+
+By step 9 the merge commit exists, so `git merge-base HEAD upstream/master` returns
+`upstream/master` itself, not the base. Recover the real base from the merge commit's
+two parents:
+
+```bash
+BASE=$(git merge-base HEAD^1 HEAD^2)          # HEAD^1 = local tip, HEAD^2 = upstream tip
+git diff $BASE upstream/master -- CHANGELOG.md            # upstream's own framing
+git log --format='%s' $BASE..upstream/master | sed 's/ (#[0-9]*)$//' | sort
+git log --oneline $BASE..upstream/master | grep -n 'release: v'   # release boundary
+```
+
+**Two traps that produce a wrong digest:**
+
+- **The changelog overstates novelty.** A `## [x.y.z]` section is written *at release
+  time*, so diffing it surfaces the whole section — including features that arrived in
+  an earlier sync and were already on the branch. Only commits in `$BASE..upstream/master`
+  are actually new. Check entries against that range and say which ones the branch
+  already had, rather than reciting the changelog as if all of it is new.
+- **Split at the `release: vX.Y.Z` commit.** Its ancestors shipped in that release;
+  commits after it are unreleased upstream work. Separate them — the user tracks a
+  released version, so "what I was missing from the release" and "what's unreleased"
+  are different answers. Note the version bump too (`cargo install` prints old → new).
+
+Group the body by theme, not commit order: features, perf, correctness (usually the
+densest), platform-specific, refactors, licensing/process. One line each, keeping
+upstream's issue numbers.
+
+**Then the part that matters most:** a short list of the upstream commits that land on
+or beside the local features — cross-referenced from the conflicts just resolved and
+the deleted-local-code audit. That tells the user where to hand-test. Explicitly flag
+overlap a clean compile and green tests cannot verify, UI/visual changes especially,
+instead of implying validation covered it.
 
 ## Conflict patterns (the ones that actually come up here)
 
