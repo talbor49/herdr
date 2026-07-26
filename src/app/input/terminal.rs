@@ -23,7 +23,7 @@ enum PreparedPopupInput {
     },
 }
 
-fn is_modifier_only_key(code: &KeyCode) -> bool {
+pub(super) fn is_modifier_only_key(code: &KeyCode) -> bool {
     matches!(code, KeyCode::Modifier(_))
 }
 

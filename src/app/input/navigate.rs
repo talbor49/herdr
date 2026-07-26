@@ -62,6 +62,11 @@ impl App {
         let key = raw_key.as_key_event();
         self.state.update_dismissed = true;
 
+        // prefix mode requests kitty report-all, which delivers bare modifier presses
+        if super::terminal::is_modifier_only_key(&key.code) {
+            return;
+        }
+
         if self.state.is_prefix_key(raw_key) {
             if self.state.copy_mode_pane_is_focused() {
                 self.state.cancel_copy_mode(&self.terminal_runtimes);
@@ -3079,6 +3084,62 @@ navigate_pane_down = "ctrl+j"
         assert_ne!(app.state.mode, Mode::ConfirmClose);
         assert_eq!(app.state.workspaces.len(), 1);
         assert_eq!(app.state.workspaces[0].display_name(), "issue");
+    }
+
+    #[tokio::test]
+    async fn bare_modifier_press_does_not_cancel_pending_prefix() {
+        let mut app = app_with_test_workspaces(&["main"]);
+        app.state.active = Some(0);
+        app.state.mode = Mode::Terminal;
+        app.state.keybinds.split_vertical = crate::config::ActionKeybinds::prefix("%");
+
+        app.handle_key(TerminalKey::new(
+            app.state.prefix_code,
+            app.state.prefix_mods,
+        ))
+        .await;
+        assert_eq!(app.state.mode, Mode::Prefix);
+
+        for modifier in [
+            crossterm::event::ModifierKeyCode::LeftShift,
+            crossterm::event::ModifierKeyCode::RightShift,
+        ] {
+            let shift = TerminalKey::new(KeyCode::Modifier(modifier), KeyModifiers::SHIFT);
+
+            app.handle_key(shift).await;
+            assert_eq!(
+                app.state.mode,
+                Mode::Prefix,
+                "local path: standalone {modifier:?} must not cancel the pending prefix"
+            );
+
+            app.handle_non_terminal_key_headless(shift);
+            assert_eq!(
+                app.state.mode,
+                Mode::Prefix,
+                "server path: standalone {modifier:?} must not cancel the pending prefix"
+            );
+
+            app.route_client_events_from(
+                crate::app::LOCAL_INPUT_SOURCE,
+                vec![crate::raw_input::RawInputEvent::Key(shift)],
+                false,
+            );
+            assert_eq!(
+                app.state.mode,
+                Mode::Prefix,
+                "client route: standalone {modifier:?} must not cancel the pending prefix"
+            );
+        }
+
+        assert_eq!(
+            non_indexed_action_for_key(
+                &app.state,
+                TerminalKey::new(KeyCode::Char('%'), KeyModifiers::SHIFT),
+                BindingDispatch::Prefix,
+            ),
+            Some(NavigateAction::SplitVertical),
+        );
     }
 
     #[cfg(unix)]
