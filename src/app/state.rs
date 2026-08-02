@@ -1055,6 +1055,10 @@ impl ExperimentSetting {
     }
 }
 
+/// Default share of sidebar height given to the workspaces section; the agents
+/// section gets the rest.
+pub const DEFAULT_SIDEBAR_SECTION_SPLIT: f32 = 0.35;
+
 /// All built-in theme names in display order.
 pub const THEME_NAMES: &[&str] = &[
     "catppuccin",
@@ -1901,7 +1905,7 @@ impl AppState {
             sidebar_width_auto: false,
             sidebar_collapsed: false,
             sidebar_collapsed_mode: crate::config::SidebarCollapsedModeConfig::Compact,
-            sidebar_section_split: 0.5,
+            sidebar_section_split: DEFAULT_SIDEBAR_SECTION_SPLIT,
             agent_panel_sort: AgentPanelSort::Spaces,
             agent_view_override: None,
             sidebar_agents: crate::config::AgentsSidebarConfig::default(),

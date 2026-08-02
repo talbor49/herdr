@@ -1847,6 +1847,7 @@ rows = [[{ token = "workspace", bold = false }, { token = "agent", dim = false }
         app.workspaces = vec![Workspace::test_new("one"), Workspace::test_new("two")];
         app.active = Some(0);
         app.mode = Mode::Terminal;
+        app.sidebar_section_split = 0.5;
         let area = Rect::new(0, 0, 26, 20);
         app.view.workspace_card_areas = compute_workspace_card_areas(&app, area);
         let first_row = app.view.workspace_card_areas[0].rect.y;
@@ -2668,6 +2669,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         ];
         app.sidebar_spaces.rows = vec![vec![crate::config::SpaceSidebarToken::Workspace]];
         app.sidebar_spaces.row_gap = 0;
+        app.sidebar_section_split = 0.5;
         let area = Rect::new(0, 0, 30, 10);
         app.view.workspace_card_areas = compute_workspace_card_areas(&app, area);
         assert_eq!(app.view.workspace_card_areas.len(), 2);
@@ -2831,6 +2833,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             workspace_with_worktree_space("one", Some("repo-key"), "/repo/herdr-one"),
             workspace_with_worktree_space("two", Some("repo-key"), "/repo/herdr-two"),
         ];
+        app.sidebar_section_split = 0.5;
         let area = Rect::new(0, 0, 30, 20);
         app.workspace_scroll = normalized_workspace_scroll(&app, area, 2);
 

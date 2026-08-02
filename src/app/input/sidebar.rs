@@ -1338,6 +1338,7 @@ mod tests {
         app.state.workspaces = vec![Workspace::test_new("a"), Workspace::test_new("b")];
         app.state.active = Some(0);
         app.state.selected = 0;
+        app.state.sidebar_section_split = 0.5;
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
         let target_row = app.state.view.workspace_card_areas[1].rect.y;
 
@@ -1759,6 +1760,7 @@ mod tests {
         // Footer-margin geometry is independent of inter-entry padding; the
         // gapped drop-slot layout is covered separately.
         app.state.sidebar_spaces.row_gap = 0;
+        app.state.sidebar_section_split = 0.5;
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 24));
 
         let cards = &app.state.view.workspace_card_areas;

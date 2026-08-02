@@ -426,7 +426,7 @@ impl App {
                 0,
                 config.ui.sidebar_width,
                 state::SidebarWidthSource::ConfigDefault,
-                0.5_f32,
+                state::DEFAULT_SIDEBAR_SECTION_SPLIT,
                 std::collections::HashSet::new(),
             )
         } else if let Some(snap) = crate::persist::load() {
@@ -462,7 +462,8 @@ impl App {
                     } else {
                         state::SidebarWidthSource::ConfigDefault
                     },
-                    snap.sidebar_section_split.unwrap_or(0.5),
+                    snap.sidebar_section_split
+                        .unwrap_or(state::DEFAULT_SIDEBAR_SECTION_SPLIT),
                     snap.collapsed_space_keys,
                 )
             } else {
@@ -479,7 +480,8 @@ impl App {
                     } else {
                         state::SidebarWidthSource::ConfigDefault
                     },
-                    snap.sidebar_section_split.unwrap_or(0.5),
+                    snap.sidebar_section_split
+                        .unwrap_or(state::DEFAULT_SIDEBAR_SECTION_SPLIT),
                     snap.collapsed_space_keys,
                 )
             }
@@ -490,7 +492,7 @@ impl App {
                 0,
                 config.ui.sidebar_width,
                 state::SidebarWidthSource::ConfigDefault,
-                0.5_f32,
+                state::DEFAULT_SIDEBAR_SECTION_SPLIT,
                 std::collections::HashSet::new(),
             )
         };
