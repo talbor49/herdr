@@ -2004,6 +2004,7 @@ mod tests {
                 lines: Some(2),
                 format: crate::api::schema::ReadFormat::Text,
                 strip_ansi: true,
+                intent: crate::api::schema::ReadIntent::Interactive,
             },
         );
         let success: SuccessResponse = serde_json::from_str(&response).unwrap();
@@ -2668,7 +2669,7 @@ mod tests {
             rx.try_recv().expect("forwarded release after pane move"),
             bytes::Bytes::from_static(b"\x1b[106;1:3u")
         );
-        assert!(app.pressed_terminal_keys.is_empty());
+        assert!(app.input_leases.is_empty());
     }
 
     #[test]

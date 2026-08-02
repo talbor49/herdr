@@ -623,7 +623,7 @@ fn worktree_source_from_space(
         source_checkout_path: source_checkout_path.clone(),
         source_repo_root: source_checkout_path,
         repo_key: space.key,
-        repo_name: space.label,
+        repo_name: space.repo_name,
     }
 }
 
