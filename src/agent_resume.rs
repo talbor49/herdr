@@ -212,6 +212,24 @@ pub fn plan(source: &str, agent: &str, session_ref: &AgentSessionRef) -> Option<
     })
 }
 
+pub fn merge_launch_argv(
+    mut plan: AgentResumePlan,
+    launch_argv: Option<&[String]>,
+) -> AgentResumePlan {
+    let Some(argv) = launch_argv else {
+        return plan;
+    };
+    if argv.first() != plan.argv.first() {
+        return plan;
+    }
+    for extra in &argv[1..] {
+        if !plan.argv.contains(extra) {
+            plan.argv.push(extra.clone());
+        }
+    }
+    plan
+}
+
 pub fn dedupe_key(source: &str, agent: &str, session_ref: &AgentSessionRef) -> String {
     format!(
         "{source}\u{0}{agent}\u{0}{:?}\u{0}{}",
@@ -580,6 +598,72 @@ mod tests {
                 .unwrap();
         assert_eq!(session_ref.kind, AgentSessionRefKind::Id);
         assert_eq!(session_ref.value, "agy-id");
+    }
+
+    #[test]
+    fn merge_launch_argv_appends_extra_flags_from_the_original_launch() {
+        let plan = AgentResumePlan {
+            agent: "claude".into(),
+            argv: vec!["claude".into(), "--resume".into(), "new-session".into()],
+            dedupe_key: "key".into(),
+        };
+        let launch_argv = vec![
+            "claude".to_string(),
+            "--model".to_string(),
+            "opus".to_string(),
+            "--dangerously-skip-permissions".to_string(),
+        ];
+        let merged = merge_launch_argv(plan, Some(&launch_argv));
+        assert_eq!(
+            merged.argv,
+            vec![
+                "claude",
+                "--resume",
+                "new-session",
+                "--model",
+                "opus",
+                "--dangerously-skip-permissions",
+            ]
+        );
+    }
+
+    #[test]
+    fn merge_launch_argv_skips_flags_already_present_in_the_plan() {
+        let plan = AgentResumePlan {
+            agent: "codex".into(),
+            argv: vec!["codex".into(), "resume".into(), "codex-session".into()],
+            dedupe_key: "key".into(),
+        };
+        let launch_argv = vec![
+            "codex".to_string(),
+            "resume".to_string(),
+            "codex-session".to_string(),
+        ];
+        let merged = merge_launch_argv(plan.clone(), Some(&launch_argv));
+        assert_eq!(merged.argv, plan.argv);
+    }
+
+    #[test]
+    fn merge_launch_argv_ignores_a_different_binary() {
+        let plan = AgentResumePlan {
+            agent: "codex".into(),
+            argv: vec!["codex".into(), "resume".into(), "codex-session".into()],
+            dedupe_key: "key".into(),
+        };
+        let launch_argv = vec!["just".to_string(), "dev".to_string()];
+        let merged = merge_launch_argv(plan.clone(), Some(&launch_argv));
+        assert_eq!(merged.argv, plan.argv);
+    }
+
+    #[test]
+    fn merge_launch_argv_passes_through_without_a_recorded_launch() {
+        let plan = AgentResumePlan {
+            agent: "codex".into(),
+            argv: vec!["codex".into(), "resume".into(), "codex-session".into()],
+            dedupe_key: "key".into(),
+        };
+        let merged = merge_launch_argv(plan.clone(), None);
+        assert_eq!(merged.argv, plan.argv);
     }
 
     #[test]

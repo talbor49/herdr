@@ -532,7 +532,9 @@ fn restore_tab(
         let pending_native_agent_restore = if was_imported {
             None
         } else {
-            startup.restore_plan.clone()
+            startup.restore_plan.clone().map(|plan| {
+                crate::agent_resume::merge_launch_argv(plan, saved_launch_argv.as_deref())
+            })
         };
         if let Some(plan) = pending_native_agent_restore {
             let terminal_id = TerminalId::alloc();
