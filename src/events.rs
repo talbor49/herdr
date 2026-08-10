@@ -54,8 +54,10 @@ pub struct WorktreeRemoveResult {
 /// An event from a background task to the main loop.
 #[derive(Debug)]
 pub enum AppEvent {
-    /// A pane's child process exited.
-    PaneDied { pane_id: PaneId },
+    /// A pane's child process exited. `abnormal` is true when the exit was not
+    /// a clean voluntary process exit (nonzero status, signal, or no exit
+    /// status was available at all, as with a handoff-imported pane).
+    PaneDied { pane_id: PaneId, abnormal: bool },
     /// Fallback detector state changed in a pane.
     StateChanged {
         pane_id: PaneId,

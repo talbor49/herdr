@@ -35,6 +35,42 @@ impl App {
             .get_or_insert(now + super::PENDING_AGENT_RESUME_THEME_WAIT);
     }
 
+    pub(crate) fn queue_agent_resume_after_unexpected_exit(
+        &mut self,
+        pane_id: crate::layout::PaneId,
+    ) -> bool {
+        let Some((_, pane_state)) = self.find_pane(pane_id) else {
+            return false;
+        };
+        let terminal_id = pane_state.attached_terminal_id.clone();
+        let Some(terminal) = self.state.terminals.get(&terminal_id) else {
+            return false;
+        };
+        let Some(session) = terminal.persisted_agent_session.clone() else {
+            return false;
+        };
+        let Some(plan) =
+            crate::agent_resume::plan(&session.source, &session.agent, &session.session_ref)
+        else {
+            return false;
+        };
+        let plan = crate::agent_resume::merge_launch_argv(plan, terminal.launch_argv.as_deref());
+        if terminal.last_auto_resume_dedupe_key.as_deref() == Some(plan.dedupe_key.as_str()) {
+            return false;
+        }
+
+        if let Some(runtime) = self.terminal_runtimes.remove(&terminal_id) {
+            runtime.shutdown();
+        }
+        let Some(terminal) = self.state.terminals.get_mut(&terminal_id) else {
+            return false;
+        };
+        terminal.last_auto_resume_dedupe_key = Some(plan.dedupe_key.clone());
+        terminal.pending_agent_resume_plan = Some(plan);
+        self.sync_pending_agent_resume_deadline(Instant::now());
+        true
+    }
+
     pub(crate) fn pending_agent_resume_due(&self, now: Instant) -> bool {
         self.pending_agent_resume_deadline
             .is_some_and(|deadline| now >= deadline)
@@ -362,6 +398,76 @@ mod tests {
             api_rx,
             crate::api::EventHub::default(),
         )
+    }
+
+    #[test]
+    fn queue_agent_resume_after_unexpected_exit_requires_persisted_session() {
+        let mut app = test_app();
+        let workspace = crate::workspace::Workspace::test_new("no-session");
+        let pane_id = workspace.tabs[0].root_pane;
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+
+        assert!(!app.queue_agent_resume_after_unexpected_exit(pane_id));
+    }
+
+    #[test]
+    fn queue_agent_resume_after_unexpected_exit_queues_a_resolvable_plan() {
+        let mut app = test_app();
+        let workspace = crate::workspace::Workspace::test_new("resumable");
+        let pane_id = workspace.tabs[0].root_pane;
+        let terminal_id = workspace.terminal_id(pane_id).cloned().unwrap();
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("test terminal should exist")
+            .set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+                source: "herdr:codex".into(),
+                agent: "codex".into(),
+                session_ref: crate::agent_resume::AgentSessionRef::id("codex-session").unwrap(),
+            });
+
+        assert!(app.queue_agent_resume_after_unexpected_exit(pane_id));
+
+        let terminal = app.state.terminals.get(&terminal_id).unwrap();
+        let plan = terminal
+            .pending_agent_resume_plan
+            .as_ref()
+            .expect("a resume plan should be queued");
+        assert_eq!(plan.argv, vec!["codex", "resume", "codex-session"]);
+        assert_eq!(
+            terminal.last_auto_resume_dedupe_key.as_deref(),
+            Some(plan.dedupe_key.as_str())
+        );
+    }
+
+    #[test]
+    fn queue_agent_resume_after_unexpected_exit_does_not_retry_the_same_session_twice() {
+        let mut app = test_app();
+        let workspace = crate::workspace::Workspace::test_new("resumable-once");
+        let pane_id = workspace.tabs[0].root_pane;
+        let terminal_id = workspace.terminal_id(pane_id).cloned().unwrap();
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("test terminal should exist")
+            .set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+                source: "herdr:codex".into(),
+                agent: "codex".into(),
+                session_ref: crate::agent_resume::AgentSessionRef::id("codex-session").unwrap(),
+            });
+        assert!(app.queue_agent_resume_after_unexpected_exit(pane_id));
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .pending_agent_resume_plan = None;
+
+        assert!(!app.queue_agent_resume_after_unexpected_exit(pane_id));
     }
 
     #[cfg(unix)]

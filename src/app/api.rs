@@ -200,7 +200,7 @@ impl App {
             return;
         }
 
-        if let AppEvent::PaneDied { pane_id } = &ev {
+        if let AppEvent::PaneDied { pane_id, abnormal } = &ev {
             if self
                 .state
                 .popup_pane
@@ -225,9 +225,15 @@ impl App {
                 self.render_notify.notify_one();
                 return;
             }
+            if *abnormal && self.queue_agent_resume_after_unexpected_exit(*pane_id) {
+                self.overlay_panes.remove(pane_id);
+                self.render_dirty.request_generic();
+                self.render_notify.notify_one();
+                return;
+            }
         }
 
-        let overlay_state = if let AppEvent::PaneDied { pane_id } = &ev {
+        let overlay_state = if let AppEvent::PaneDied { pane_id, .. } = &ev {
             self.overlay_panes.remove(pane_id).map(|overlay| {
                 let was_overlay_active =
                     self.state
@@ -251,7 +257,7 @@ impl App {
             None
         };
 
-        if let AppEvent::PaneDied { pane_id } = &ev {
+        if let AppEvent::PaneDied { pane_id, .. } = &ev {
             if let Some((ws_idx, _)) = self.find_pane(*pane_id) {
                 if let Some(public_pane_id) = self.public_pane_id(ws_idx, *pane_id) {
                     self.emit_event(crate::api::schema::EventEnvelope {
@@ -264,7 +270,7 @@ impl App {
                 }
             }
         }
-        let pane_exit_layout_target = if let AppEvent::PaneDied { pane_id } = &ev {
+        let pane_exit_layout_target = if let AppEvent::PaneDied { pane_id, .. } = &ev {
             self.find_pane(*pane_id).and_then(|(ws_idx, _)| {
                 self.layout_update_target_after_pane_removal(ws_idx, *pane_id)
             })
@@ -1899,6 +1905,7 @@ mod tests {
 
         app.handle_internal_event(AppEvent::PaneDied {
             pane_id: overlay_pane,
+            abnormal: false,
         });
 
         let overlay_tab = &app.state.workspaces[0].tabs[0];
@@ -1925,7 +1932,10 @@ mod tests {
         app.state.ensure_test_terminals();
         let tab_id = app.public_tab_id(0, 0).unwrap();
 
-        app.handle_internal_event(AppEvent::PaneDied { pane_id: dead_pane });
+        app.handle_internal_event(AppEvent::PaneDied {
+            pane_id: dead_pane,
+            abnormal: false,
+        });
 
         let events = event_hub.events_after(0);
         let pane_exited = events
@@ -2074,6 +2084,7 @@ mod tests {
 
         app.handle_internal_event(AppEvent::PaneDied {
             pane_id: overlay_pane,
+            abnormal: false,
         });
 
         let events = event_hub.events_after(0);
@@ -2099,6 +2110,7 @@ mod tests {
 
         app.handle_internal_event(AppEvent::PaneDied {
             pane_id: overlay_pane,
+            abnormal: false,
         });
 
         let tab = &app.state.workspaces[0].tabs[0];
@@ -2118,6 +2130,7 @@ mod tests {
 
         app.handle_internal_event(AppEvent::PaneDied {
             pane_id: overlay_pane,
+            abnormal: false,
         });
 
         let tab = &app.state.workspaces[0].tabs[0];
@@ -2156,7 +2169,10 @@ mod tests {
                 .expect("test session id should be valid"),
         });
 
-        app.handle_internal_event(AppEvent::PaneDied { pane_id });
+        app.handle_internal_event(AppEvent::PaneDied {
+            pane_id,
+            abnormal: false,
+        });
 
         assert!(
             app.find_pane(pane_id).is_some(),
@@ -2170,6 +2186,98 @@ mod tests {
         assert!(!terminal.respawn_shell_on_exit);
         assert!(terminal.persisted_agent_session.is_none());
         assert!(terminal.agent_name.is_none());
+
+        for (_, runtime) in app.terminal_runtimes.drain() {
+            runtime.shutdown();
+        }
+    }
+
+    #[tokio::test]
+    async fn pane_died_with_abnormal_exit_auto_resumes_persisted_agent_session() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &crate::config::Config::default(),
+            true,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        let workspace = crate::workspace::Workspace::test_new("crashed");
+        let pane_id = workspace.tabs[0].root_pane;
+        let terminal_id = workspace.terminal_id(pane_id).cloned().unwrap();
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("test terminal should exist")
+            .set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+                source: "herdr:codex".into(),
+                agent: "codex".into(),
+                session_ref: crate::agent_resume::AgentSessionRef::id("codex-session")
+                    .expect("test session id should be valid"),
+            });
+
+        app.handle_internal_event(AppEvent::PaneDied {
+            pane_id,
+            abnormal: true,
+        });
+
+        assert!(
+            app.find_pane(pane_id).is_some(),
+            "a pane with a resumable session should stay attached after an abnormal exit"
+        );
+        let terminal = app
+            .state
+            .terminals
+            .get(&terminal_id)
+            .expect("terminal should survive the unexpected exit");
+        let plan = terminal
+            .pending_agent_resume_plan
+            .as_ref()
+            .expect("an abnormal exit with a persisted session should queue a resume plan");
+        assert_eq!(plan.argv, vec!["codex", "resume", "codex-session"]);
+
+        for (_, runtime) in app.terminal_runtimes.drain() {
+            runtime.shutdown();
+        }
+    }
+
+    #[tokio::test]
+    async fn pane_died_with_clean_exit_does_not_auto_resume() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &crate::config::Config::default(),
+            true,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        let workspace = crate::workspace::Workspace::test_new("clean-exit");
+        let pane_id = workspace.tabs[0].root_pane;
+        let terminal_id = workspace.terminal_id(pane_id).cloned().unwrap();
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("test terminal should exist")
+            .set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+                source: "herdr:codex".into(),
+                agent: "codex".into(),
+                session_ref: crate::agent_resume::AgentSessionRef::id("codex-session")
+                    .expect("test session id should be valid"),
+            });
+
+        app.handle_internal_event(AppEvent::PaneDied {
+            pane_id,
+            abnormal: false,
+        });
+
+        assert!(
+            app.find_pane(pane_id).is_none(),
+            "a clean voluntary exit should close the pane, not relaunch it"
+        );
 
         for (_, runtime) in app.terminal_runtimes.drain() {
             runtime.shutdown();

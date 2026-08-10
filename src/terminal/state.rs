@@ -145,6 +145,7 @@ pub struct TerminalState {
     pub respawn_shell_on_exit: bool,
     recent_agent_process_exit: Option<RecentAgentProcessExit>,
     pub pending_agent_resume_plan: Option<crate::agent_resume::AgentResumePlan>,
+    pub last_auto_resume_dedupe_key: Option<String>,
 }
 
 impl TerminalState {
@@ -178,6 +179,7 @@ impl TerminalState {
             respawn_shell_on_exit: false,
             recent_agent_process_exit: None,
             pending_agent_resume_plan: None,
+            last_auto_resume_dedupe_key: None,
         }
     }
 
