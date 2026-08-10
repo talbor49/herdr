@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use super::{App, SESSION_SAVE_DEBOUNCE};
+use super::{App, AUTOSAVE_FLOOR_INTERVAL, SESSION_SAVE_DEBOUNCE};
 
 enum SessionSaveJob {
     Clear,
@@ -13,13 +13,22 @@ enum SessionSaveJob {
 impl App {
     pub(super) fn schedule_session_save(&mut self) {
         if !self.no_session {
-            self.session_save_deadline = Some(Instant::now() + SESSION_SAVE_DEBOUNCE);
+            let now = Instant::now();
+            self.session_save_deadline = Some(now + SESSION_SAVE_DEBOUNCE);
+            self.autosave_floor_deadline = now + AUTOSAVE_FLOOR_INTERVAL;
         }
     }
 
     pub(crate) fn sync_session_save_schedule(&mut self) {
+        if self.no_session {
+            return;
+        }
         if self.state.session_dirty {
             self.state.session_dirty = false;
+            self.schedule_session_save();
+            return;
+        }
+        if Instant::now() >= self.autosave_floor_deadline {
             self.schedule_session_save();
         }
     }

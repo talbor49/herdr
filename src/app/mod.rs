@@ -42,6 +42,7 @@ const GIT_REPO_DISCOVERY_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60
 const AUTO_UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(30 * 60);
 const PENDING_AGENT_RESUME_THEME_WAIT: Duration = Duration::from_millis(750);
 const SESSION_SAVE_DEBOUNCE: Duration = Duration::from_secs(5);
+const AUTOSAVE_FLOOR_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const SIDEBAR_DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(350);
 const PANE_DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(350);
 const PANE_COPY_HIGHLIGHT_DURATION: Duration = Duration::from_millis(500);
@@ -138,6 +139,7 @@ pub struct App {
     pub(crate) selection_autoscroll_deadline: Option<Instant>,
     pub(crate) selection_highlight_clear_deadline: Option<Instant>,
     pub(crate) session_save_deadline: Option<Instant>,
+    pub(crate) autosave_floor_deadline: Instant,
     pub(crate) session_save_thread: Option<std::thread::JoinHandle<()>>,
     pub(crate) detached_custom_command_children: Vec<std::process::Child>,
     tab_bar_status_generation: u64,
@@ -792,6 +794,7 @@ impl App {
             agent_metadata_deadline: None,
             pending_agent_resume_deadline: None,
             session_save_deadline: None,
+            autosave_floor_deadline: Instant::now() + AUTOSAVE_FLOOR_INTERVAL,
             session_save_thread: None,
             detached_custom_command_children: Vec::new(),
             tab_bar_status_generation: 0,
@@ -4949,6 +4952,45 @@ mod tests {
 
         assert!(!app.state.session_dirty);
         assert!(app.session_save_deadline.is_some());
+    }
+
+    #[test]
+    fn sync_session_save_schedule_forces_a_save_once_the_autosave_floor_is_due() {
+        let mut app = test_app();
+        app.no_session = false;
+        app.state.session_dirty = false;
+        app.session_save_deadline = None;
+        app.autosave_floor_deadline = Instant::now() - Duration::from_millis(1);
+
+        app.sync_session_save_schedule();
+
+        assert!(app.session_save_deadline.is_some());
+        assert!(app.autosave_floor_deadline > Instant::now());
+    }
+
+    #[test]
+    fn sync_session_save_schedule_does_nothing_before_the_autosave_floor_is_due() {
+        let mut app = test_app();
+        app.no_session = false;
+        app.state.session_dirty = false;
+        app.session_save_deadline = None;
+        app.autosave_floor_deadline = Instant::now() + Duration::from_secs(60);
+
+        app.sync_session_save_schedule();
+
+        assert!(app.session_save_deadline.is_none());
+    }
+
+    #[test]
+    fn sync_session_save_schedule_skips_the_autosave_floor_in_no_session_mode() {
+        let mut app = test_app();
+        app.no_session = true;
+        app.session_save_deadline = None;
+        app.autosave_floor_deadline = Instant::now() - Duration::from_millis(1);
+
+        app.sync_session_save_schedule();
+
+        assert!(app.session_save_deadline.is_none());
     }
 
     #[test]
