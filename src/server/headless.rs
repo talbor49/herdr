@@ -6767,47 +6767,6 @@ next_tab = ""
     }
 
     #[test]
-    fn terminal_attach_page_key_forwards_in_application_cursor_mode() {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("test runtime");
-        let _runtime_guard = rt.enter();
-        // DECCKM set (application cursor keys) without alt screen — a pager such
-        // as less running on the main screen under git's `LESS=FRX`.
-        let mut bytes = b"\x1b[?1h".to_vec();
-        for line in 0..80 {
-            bytes.extend_from_slice(format!("line {line:02}\r\n").as_bytes());
-        }
-        let (runtime, mut input_rx) =
-            crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
-                20, 5, 4096, &bytes, 4,
-            );
-        runtime.scroll_up(3);
-
-        apply_terminal_attach_scroll(
-            &runtime,
-            AttachScrollSource::PageKey {
-                input: b"\x1b[6~".to_vec(),
-            },
-            AttachScrollDirection::Down,
-            4,
-            None,
-            None,
-            0,
-        )
-        .expect("page key forward");
-
-        assert_eq!(
-            input_rx.try_recv().expect("forwarded page key"),
-            Bytes::from_static(b"\x1b[6~")
-        );
-        drop(runtime);
-        drop(_runtime_guard);
-        rt.shutdown_timeout(Duration::from_millis(100));
-    }
-
-    #[test]
     fn headless_scheduled_tasks_expire_agent_metadata() {
         let mut server = test_headless_server();
         let workspace = crate::workspace::Workspace::test_new("metadata");

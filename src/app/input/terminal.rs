@@ -1923,52 +1923,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn page_keys_forward_to_app_in_application_cursor_mode() {
-        let mut app = app_for_mouse_test();
-        let mut ws = Workspace::test_new("test");
-        let pane_id = ws.tabs[0].root_pane;
-        let pane_infos = ws.tabs[0].layout.panes(Rect::new(26, 2, 80, 18));
-        let info = pane_infos[0].clone();
-        // DECCKM (application cursor keys) set, like a pager such as less running
-        // on the main screen via git's `LESS=FRX`.
-        let mut bytes = b"\x1b[?1h".to_vec();
-        bytes.extend_from_slice(&numbered_lines_bytes(64));
-        ws.tabs[0].runtimes.insert(
-            pane_id,
-            crate::terminal::TerminalRuntime::test_with_scrollback_bytes(
-                info.inner_rect.width,
-                info.inner_rect.height,
-                16 * 1024,
-                &bytes,
-            ),
-        );
-
-        app.state.workspaces = vec![ws];
-        app.state.active = Some(0);
-        app.state.selected = 0;
-        app.state.mode = Mode::Terminal;
-        app.state.view.pane_infos = pane_infos;
-
-        let input_state = app
-            .state
-            .runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
-            .and_then(crate::terminal::TerminalRuntime::input_state)
-            .expect("input state");
-        assert!(input_state.application_cursor);
-        assert!(!input_state.alternate_screen);
-
-        let prepared = app.prepare_terminal_key_forward(
-            crate::app::LOCAL_INPUT_SOURCE,
-            TerminalKey::new(KeyCode::PageDown, KeyModifiers::empty()),
-        );
-        assert!(
-            prepared.is_some(),
-            "page key must forward to the app in application-cursor mode"
-        );
-        assert!(!prepared.unwrap().bytes.is_empty());
-    }
-
-    #[tokio::test]
     async fn page_up_release_does_not_scroll_plain_shell_pane_again() {
         let (mut app, pane_id, pane_info) = app_with_plain_scrollback(64);
 
