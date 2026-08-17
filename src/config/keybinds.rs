@@ -58,14 +58,13 @@ impl BindingConfig {
             }
             match parse_binding_string(raw) {
                 Some(ParsedBinding::Single(binding)) => {
-                    if matches!(binding.trigger.combo().0, KeyCode::Char('1'..='9')) {
+                    if indexed_key_position(binding.trigger.combo().0).is_some() {
                         labels.push(binding.label);
                     }
                 }
                 Some(ParsedBinding::Range(range)) => {
                     labels.extend(range.into_iter().filter_map(|binding| {
-                        matches!(binding.trigger.combo().0, KeyCode::Char('1'..='9'))
-                            .then_some(binding.label)
+                        indexed_key_position(binding.trigger.combo().0).map(|_| binding.label)
                     }));
                 }
                 None => {}
@@ -266,17 +265,20 @@ impl IndexedKeybind {
     pub fn matched_index(&self, key: &TerminalKey) -> Option<usize> {
         let combo = self.trigger.combo();
         let (expected_code, _) = normalize_key_combo(combo);
-        let KeyCode::Char(key_number @ '1'..='9') = expected_code else {
-            return None;
-        };
-        let legacy_shifted_number = matches!(key.code, KeyCode::Char(c)
+        let position = indexed_key_position(expected_code)?;
+        let legacy_shifted_number = matches!((expected_code, key.code), (KeyCode::Char(key_number), KeyCode::Char(c))
             if shifted_number_symbol(c) == Some(key_number)
                 && indexed_shifted_number_matches(key, combo, key_number));
-        if terminal_key_matches_combo(key, combo) || legacy_shifted_number {
-            Some((key_number as usize) - ('1' as usize))
-        } else {
-            None
-        }
+        (terminal_key_matches_combo(key, combo) || legacy_shifted_number).then_some(position)
+    }
+}
+
+/// Zero-based agent/tab/workspace slot a key stands for in an indexed binding.
+fn indexed_key_position(code: KeyCode) -> Option<usize> {
+    match code {
+        KeyCode::Char(digit @ '1'..='9') => Some(digit as usize - '1' as usize),
+        KeyCode::F(n @ 1..=12) => Some(n as usize - 1),
+        _ => None,
     }
 }
 
@@ -914,9 +916,9 @@ fn push_indexed_binding(
     source: BindingSource,
     bindings: &mut Vec<IndexedKeybind>,
 ) {
-    if !matches!(binding.trigger.combo().0, KeyCode::Char('1'..='9')) {
+    if indexed_key_position(binding.trigger.combo().0).is_none() {
         let diag = format!(
-            "indexed keybinding must use 1..9: {field} = {:?}; disabling binding",
+            "indexed keybinding must use 1..9 or f1..f12: {field} = {:?}; disabling binding",
             binding.label
         );
         warn!(message = %diag, "config diagnostic");
@@ -1067,13 +1069,11 @@ fn parse_binding_string(raw: &str) -> Option<ParsedBinding> {
         (false, trimmed)
     };
 
-    if let Some(range_modifiers) = parse_range_modifiers(body) {
-        let bindings = (1..=9)
-            .map(|idx| {
-                let combo = (
-                    KeyCode::Char(char::from_digit(idx, 10).unwrap_or('1')),
-                    range_modifiers,
-                );
+    if let Some((range_modifiers, range_codes)) = parse_range_spec(body) {
+        let bindings = range_codes
+            .into_iter()
+            .map(|code| {
+                let combo = (code, range_modifiers);
                 let key_label = format_key_combo(combo);
                 ResolvedBinding {
                     trigger: if trigger_prefix {
@@ -1177,21 +1177,34 @@ fn parse_modifier_token(token: &str) -> Option<KeyModifiers> {
     }
 }
 
-fn parse_range_modifiers(s: &str) -> Option<KeyModifiers> {
+fn parse_range_spec(s: &str) -> Option<(KeyModifiers, Vec<KeyCode>)> {
     let mut modifiers = KeyModifiers::empty();
-    let mut saw_range = false;
+    let mut codes: Option<Vec<KeyCode>> = None;
     for part in s.split('+') {
         let trimmed = part.trim();
-        if trimmed == "1..9" {
-            if saw_range {
+        if let Some(range) = parse_key_range(trimmed) {
+            if codes.is_some() {
                 return None;
             }
-            saw_range = true;
+            codes = Some(range);
         } else {
             modifiers |= parse_modifier_token(trimmed)?;
         }
     }
-    saw_range.then_some(modifiers)
+    codes.map(|codes| (modifiers, codes))
+}
+
+fn parse_key_range(token: &str) -> Option<Vec<KeyCode>> {
+    let (start, end) = token.split_once("..")?;
+    match (parse_key_combo(start)?.0, parse_key_combo(end)?.0) {
+        (KeyCode::Char(first @ '1'..='9'), KeyCode::Char(last @ '1'..='9')) if first <= last => {
+            Some((first..=last).map(KeyCode::Char).collect())
+        }
+        (KeyCode::F(first @ 1..=12), KeyCode::F(last @ 1..=12)) if first <= last => {
+            Some((first..=last).map(KeyCode::F).collect())
+        }
+        _ => None,
+    }
 }
 
 fn parse_modifier_combo(s: &str) -> Option<KeyModifiers> {
@@ -2097,6 +2110,26 @@ switch_tab = "prefix+?"
         assert!(!diagnostics.iter().any(|diag| {
             diag.contains("kept keys.switch_tab") && diag.contains("disabled keys.help")
         }));
+    }
+
+    #[test]
+    fn function_key_range_binds_each_agent_slot() {
+        let config: Config = toml::from_str(
+            r#"
+[keys]
+focus_agent = "f1..f11"
+"#,
+        )
+        .unwrap();
+
+        let kb = config.keybinds();
+        assert_eq!(kb.focus_agent.len(), 11);
+        assert!(config.collect_diagnostics().is_empty());
+        for (idx, binding) in kb.focus_agent.iter().enumerate() {
+            assert!(binding.trigger.is_direct());
+            let key = TerminalKey::new(KeyCode::F(idx as u8 + 1), KeyModifiers::empty());
+            assert_eq!(binding.matched_index(&key), Some(idx));
+        }
     }
 
     #[test]

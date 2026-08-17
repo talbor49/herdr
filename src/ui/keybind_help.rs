@@ -35,9 +35,9 @@ fn indexed_label(bindings: &[crate::config::IndexedKeybind]) -> String {
     let mut parts = Vec::new();
     let mut index = 0;
     while index < bindings.len() {
-        if let Some(prefix) = indexed_range_prefix(&bindings[index..]) {
-            parts.push(format!("{prefix}1..9"));
-            index += 9;
+        if let Some((label, run_len)) = indexed_range_label(&bindings[index..]) {
+            parts.push(label);
+            index += run_len;
         } else {
             parts.push(bindings[index].label.clone());
             index += 1;
@@ -47,16 +47,51 @@ fn indexed_label(bindings: &[crate::config::IndexedKeybind]) -> String {
     parts.join(" / ")
 }
 
-fn indexed_range_prefix(bindings: &[crate::config::IndexedKeybind]) -> Option<&str> {
-    let run = bindings.get(..9)?;
-    let prefix = run[0].label.strip_suffix('1')?;
-    for (offset, binding) in run.iter().enumerate() {
-        let digit = char::from(b'1' + offset as u8);
-        if binding.label.strip_suffix(digit) != Some(prefix) {
-            return None;
+/// Collapses a consecutive run like `prefix+1`..`prefix+9` or `f1`..`f11` into one help label.
+fn indexed_range_label(bindings: &[crate::config::IndexedKeybind]) -> Option<(String, usize)> {
+    let (prefix, function_key, first) = indexed_label_parts(&bindings[0].label)?;
+    let mut run_len = 1;
+    while let Some((next_prefix, next_function_key, number)) = bindings
+        .get(run_len)
+        .and_then(|binding| indexed_label_parts(&binding.label))
+    {
+        if next_prefix != prefix
+            || next_function_key != function_key
+            || number != first + run_len as u8
+        {
+            break;
+        }
+        run_len += 1;
+    }
+
+    if run_len < 3 {
+        return None;
+    }
+    let key = |number: u8| {
+        if function_key {
+            format!("f{number}")
+        } else {
+            number.to_string()
+        }
+    };
+    Some((
+        format!("{prefix}{}..{}", key(first), key(first + run_len as u8 - 1)),
+        run_len,
+    ))
+}
+
+fn indexed_label_parts(label: &str) -> Option<(&str, bool, u8)> {
+    let (prefix, key) = match label.rfind('+') {
+        Some(pos) => label.split_at(pos + 1),
+        None => ("", label),
+    };
+    match key.strip_prefix('f') {
+        Some(number) => Some((prefix, true, number.parse().ok()?)),
+        None => {
+            let digit = key.chars().next().filter(|_| key.len() == 1)?;
+            Some((prefix, false, digit.to_digit(10)? as u8))
         }
     }
-    Some(prefix)
 }
 
 pub(super) fn keybind_help_groups(app: &AppState) -> Vec<HelpGroup> {
