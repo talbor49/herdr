@@ -20,11 +20,7 @@ pub(super) enum ResolvedTokenKind {
     Agent(String),
     TerminalTitle(String),
     Branch(String),
-    GitStatus {
-        ahead: usize,
-        behind: usize,
-        dirty: usize,
-    },
+    GitStatus { dirty: usize },
     Custom(String),
 }
 
@@ -96,7 +92,6 @@ pub(super) struct SpaceTokenContext<'a> {
     pub workspace: &'a str,
     pub branch: Option<&'a str>,
     pub state_text: &'a str,
-    pub ahead_behind: Option<(usize, usize)>,
     pub dirty: usize,
     pub tokens: &'a std::collections::HashMap<String, String>,
     pub suppress_git_details: bool,
@@ -127,15 +122,8 @@ pub(super) fn space_rows(
                             .map(|branch| ResolvedTokenKind::Branch(branch.to_string())),
                         SpaceSidebarToken::Branch => None,
                         SpaceSidebarToken::GitStatus if !context.suppress_git_details => {
-                            let (ahead, behind) = context.ahead_behind.unwrap_or((0, 0));
                             let dirty = context.dirty;
-                            (ahead > 0 || behind > 0 || dirty > 0).then_some(
-                                ResolvedTokenKind::GitStatus {
-                                    ahead,
-                                    behind,
-                                    dirty,
-                                },
-                            )
+                            (dirty > 0).then_some(ResolvedTokenKind::GitStatus { dirty })
                         }
                         SpaceSidebarToken::GitStatus => None,
                         SpaceSidebarToken::Custom(name) => context
@@ -309,7 +297,6 @@ mod tests {
                     workspace: "feature",
                     branch: Some("worktree/feature"),
                     state_text: "idle",
-                    ahead_behind: Some((2, 1)),
                     dirty: 0,
                     tokens: &std::collections::HashMap::new(),
                     suppress_git_details: true,
@@ -337,7 +324,6 @@ mod tests {
                     workspace: "repo",
                     branch: None,
                     state_text: "idle",
-                    ahead_behind: None,
                     dirty: 0,
                     tokens: &tokens,
                     suppress_git_details: false,

@@ -104,7 +104,7 @@ impl App {
         for token in self.state.sidebar_spaces.rows.iter().flatten() {
             match token.parts().0 {
                 crate::config::SpaceSidebarToken::Branch => demand.branch = true,
-                crate::config::SpaceSidebarToken::GitStatus => demand.ahead_behind = true,
+                crate::config::SpaceSidebarToken::GitStatus => demand.dirty = true,
                 _ => {}
             }
         }
@@ -261,7 +261,6 @@ mod tests {
             snapshot: crate::workspace::WorkspaceGitStatusSnapshot {
                 auto_label: "/".into(),
                 branch: Some("main".into()),
-                ahead_behind: None,
                 space: Some(crate::workspace::GitSpaceMetadata {
                     key: "/.git".into(),
                     checkout_key: "/".into(),
@@ -351,7 +350,6 @@ mod tests {
             snapshot: crate::workspace::WorkspaceGitStatusSnapshot {
                 auto_label: "stale".into(),
                 branch: None,
-                ahead_behind: None,
                 space: None,
                 dirty: None,
             },
@@ -403,14 +401,14 @@ mod tests {
                 crate::config::SpaceSidebarToken::Branch,
                 GitStatusRefreshDemand {
                     branch: true,
-                    ahead_behind: false,
+                    dirty: false,
                 },
             ),
             (
                 crate::config::SpaceSidebarToken::GitStatus,
                 GitStatusRefreshDemand {
                     branch: false,
-                    ahead_behind: true,
+                    dirty: true,
                 },
             ),
         ];

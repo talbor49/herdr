@@ -1706,12 +1706,12 @@ mod tests {
         let mut first = Workspace::test_new("a");
         let first_root = first.tabs[0].root_pane;
         first.identity_cwd = first_repo.clone();
-        first.refresh_git_ahead_behind();
+        first.refresh_git_identity();
 
         let mut second = Workspace::test_new("b");
         let second_root = second.tabs[0].root_pane;
         second.identity_cwd = second_repo.clone();
-        second.refresh_git_ahead_behind();
+        second.refresh_git_identity();
 
         app.state.workspaces = vec![first, second];
         app.state.ensure_test_terminals();

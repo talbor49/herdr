@@ -2647,11 +2647,7 @@ impl AppState {
                 ws.cached_git_branch = result.branch;
                 changed = true;
             }
-            if result.demand.ahead_behind && ws.cached_git_ahead_behind != result.ahead_behind {
-                ws.cached_git_ahead_behind = result.ahead_behind;
-                changed = true;
-            }
-            if ws.cached_git_dirty != result.dirty {
+            if result.demand.dirty && ws.cached_git_dirty != result.dirty {
                 ws.cached_git_dirty = result.dirty;
                 changed = true;
             }
@@ -4078,7 +4074,6 @@ mod tests {
                 demand: crate::workspace::GitStatusRefreshDemand::ALL,
                 auto_label: "one".into(),
                 branch: Some("main".into()),
-                ahead_behind: Some((2, 1)),
                 space: None,
                 dirty: Some(3),
             }],
@@ -4086,10 +4081,8 @@ mod tests {
 
         assert!(changed);
         assert_eq!(state.workspaces[0].branch().as_deref(), Some("main"));
-        assert_eq!(state.workspaces[0].git_ahead_behind(), Some((2, 1)));
         assert_eq!(state.workspaces[0].git_dirty(), Some(3));
         assert_eq!(state.workspaces[1].id, second_id);
-        assert_eq!(state.workspaces[1].git_ahead_behind(), None);
         assert_eq!(state.workspaces[1].git_dirty(), None);
     }
 
@@ -4098,7 +4091,7 @@ mod tests {
         let mut state = app_with_workspaces(&["one"]);
         let workspace_id = state.workspaces[0].id.clone();
         state.workspaces[0].cached_git_branch = Some("old".into());
-        state.workspaces[0].cached_git_ahead_behind = Some((1, 0));
+        state.workspaces[0].cached_git_dirty = Some(1);
 
         let terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
         let changed = state.apply_workspace_git_statuses(
@@ -4110,15 +4103,14 @@ mod tests {
                 demand: crate::workspace::GitStatusRefreshDemand::ALL,
                 auto_label: "stale".into(),
                 branch: Some("main".into()),
-                ahead_behind: Some((0, 1)),
                 space: None,
-                dirty: None,
+                dirty: Some(9),
             }],
         );
 
         assert!(!changed);
         assert_eq!(state.workspaces[0].branch().as_deref(), Some("old"));
-        assert_eq!(state.workspaces[0].git_ahead_behind(), Some((1, 0)));
+        assert_eq!(state.workspaces[0].git_dirty(), Some(1));
     }
 
     #[test]
@@ -4138,11 +4130,10 @@ mod tests {
                 status_cache_key: cwd,
                 demand: crate::workspace::GitStatusRefreshDemand {
                     branch: false,
-                    ahead_behind: true,
+                    dirty: true,
                 },
                 auto_label: "one".into(),
                 branch: Some("new".into()),
-                ahead_behind: None,
                 space: None,
                 dirty: None,
             }],
@@ -4158,7 +4149,7 @@ mod tests {
         let workspace_id = state.workspaces[0].id.clone();
         let cwd = state.workspaces[0].resolved_identity_cwd().unwrap();
         state.workspaces[0].cached_git_branch = Some("main".into());
-        state.workspaces[0].cached_git_ahead_behind = Some((1, 2));
+        state.workspaces[0].cached_git_dirty = Some(2);
 
         let terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
         let changed = state.apply_workspace_git_statuses(
@@ -4170,7 +4161,6 @@ mod tests {
                 demand: crate::workspace::GitStatusRefreshDemand::ALL,
                 auto_label: "one".into(),
                 branch: None,
-                ahead_behind: None,
                 space: None,
                 dirty: None,
             }],
@@ -4178,7 +4168,7 @@ mod tests {
 
         assert!(changed);
         assert_eq!(state.workspaces[0].branch(), None);
-        assert_eq!(state.workspaces[0].git_ahead_behind(), None);
+        assert_eq!(state.workspaces[0].git_dirty(), None);
     }
 
     #[test]
@@ -4199,7 +4189,6 @@ mod tests {
                 demand: crate::workspace::GitStatusRefreshDemand::ALL,
                 auto_label: "other".into(),
                 branch: Some("scratch".into()),
-                ahead_behind: None,
                 space: Some(crate::workspace::GitSpaceMetadata {
                     key: "other-repo-key".into(),
                     checkout_key: "/other/checkout".into(),

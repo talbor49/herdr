@@ -1088,7 +1088,7 @@ mod tests {
         let repo = temp_git_repo("main");
         ws.identity_cwd = repo.clone();
         let root_pane = ws.tabs[0].root_pane;
-        ws.refresh_git_ahead_behind();
+        ws.refresh_git_identity();
 
         app.workspaces = vec![ws];
         app.ensure_test_terminals();

@@ -19,8 +19,6 @@ mod aggregate;
 mod git;
 mod tab;
 
-#[cfg(test)]
-use self::git::git_ahead_behind;
 use self::git::git_status_cache_key_for_space;
 pub(crate) use self::{git::git_status_snapshot_for_cwd_with_demand, tab::MovedPane};
 pub use self::{
@@ -48,7 +46,6 @@ pub struct WorkspaceGitStatus {
     pub demand: GitStatusRefreshDemand,
     pub auto_label: String,
     pub branch: Option<String>,
-    pub ahead_behind: Option<(usize, usize)>,
     pub space: Option<GitSpaceMetadata>,
     /// Count of uncommitted changes (tracked + untracked), or `None` when unknown.
     pub dirty: Option<usize>,
@@ -58,7 +55,6 @@ pub struct WorkspaceGitStatus {
 pub struct WorkspaceGitStatusSnapshot {
     pub auto_label: String,
     pub branch: Option<String>,
-    pub ahead_behind: Option<(usize, usize)>,
     pub space: Option<GitSpaceMetadata>,
     pub dirty: Option<usize>,
 }
@@ -100,7 +96,6 @@ impl WorkspaceGitStatusSnapshot {
             demand,
             auto_label,
             branch: self.branch,
-            ahead_behind: self.ahead_behind,
             space: self.space,
             dirty: self.dirty,
         }
@@ -194,8 +189,6 @@ pub struct Workspace {
     pub(crate) cached_git_status_key: PathBuf,
     /// Cached current git branch for the workspace repo.
     pub(crate) cached_git_branch: Option<String>,
-    /// Cached ahead/behind counts for the workspace repo's current branch upstream.
-    pub(crate) cached_git_ahead_behind: Option<(usize, usize)>,
     /// Cached count of uncommitted changes (tracked + untracked) in the checkout.
     pub(crate) cached_git_dirty: Option<usize>,
     /// Cached derived Git repo metadata for worktree actions and status display.
@@ -265,7 +258,6 @@ impl Workspace {
             cached_auto_label,
             cached_git_status_key,
             cached_git_branch: git_branch(&identity_cwd),
-            cached_git_ahead_behind: None,
             cached_git_dirty: None,
             cached_git_space,
             worktree_space: None,
@@ -465,7 +457,6 @@ impl Workspace {
                 cached_auto_label,
                 cached_git_status_key,
                 cached_git_branch: git_branch(&initial_cwd),
-                cached_git_ahead_behind: None,
                 cached_git_dirty: None,
                 cached_git_space,
                 worktree_space: None,
@@ -1190,10 +1181,6 @@ impl Workspace {
         self.cached_git_branch.clone()
     }
 
-    pub fn git_ahead_behind(&self) -> Option<(usize, usize)> {
-        self.cached_git_ahead_behind
-    }
-
     /// Count of uncommitted changes (tracked + untracked), or `None` when unknown.
     pub fn git_dirty(&self) -> Option<usize> {
         self.cached_git_dirty
@@ -1208,10 +1195,9 @@ impl Workspace {
     }
 
     #[cfg(test)]
-    pub fn refresh_git_ahead_behind(&mut self) {
+    pub fn refresh_git_identity(&mut self) {
         let cwd = self.resolved_identity_cwd();
         self.cached_git_branch = cwd.as_deref().and_then(git_branch);
-        self.cached_git_ahead_behind = cwd.as_deref().and_then(git_ahead_behind);
         self.cached_git_space = cwd.as_deref().and_then(git_space_metadata);
     }
 
@@ -1329,7 +1315,6 @@ impl Workspace {
             cached_auto_label: fallback_label_from_cwd(&identity_cwd),
             cached_git_status_key: identity_cwd.clone(),
             cached_git_branch: git_branch(&identity_cwd),
-            cached_git_ahead_behind: None,
             cached_git_dirty: None,
             cached_git_space: None,
             worktree_space: None,

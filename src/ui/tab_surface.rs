@@ -261,7 +261,6 @@ mod tests {
         let mut workspace = Workspace::test_new("characterization");
         workspace.identity_cwd = std::path::PathBuf::from("characterization");
         workspace.cached_git_branch = None;
-        workspace.cached_git_ahead_behind = None;
         workspace.cached_git_space = None;
         workspace.test_add_tab(Some("logs"));
         workspace.switch_tab(0);

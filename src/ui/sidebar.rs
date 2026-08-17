@@ -221,7 +221,6 @@ fn workspace_row_height(app: &AppState, ws: &crate::workspace::Workspace, indent
             workspace: &label,
             branch: ws.branch().as_deref(),
             state_text: state_label(state, seen),
-            ahead_behind: ws.git_ahead_behind(),
             dirty: ws.git_dirty().unwrap_or(0),
             tokens: &token_values,
             suppress_git_details: indented,
@@ -1152,16 +1151,8 @@ fn resolved_token_spans(
         .iter()
         .map(|token| match &token.kind {
             ResolvedTokenKind::StateIcon => display_width(state_icon.0),
-            ResolvedTokenKind::GitStatus {
-                ahead,
-                behind,
-                dirty,
-            } => {
-                usize::from(*ahead > 0) * display_width(&format!("↑{ahead}"))
-                    + usize::from(*behind > 0) * display_width(&format!("↓{behind}"))
-                    + usize::from(*ahead > 0 && *behind > 0)
-                    + usize::from(*dirty > 0) * display_width(&format!("●{dirty}"))
-                    + usize::from(*dirty > 0 && (*ahead > 0 || *behind > 0))
+            ResolvedTokenKind::GitStatus { dirty } => {
+                usize::from(*dirty > 0) * display_width(&format!("●{dirty}"))
             }
             _ => 0,
         })
@@ -1289,36 +1280,8 @@ fn resolved_token_spans(
                     apply_token_style(secondary_style, token.style),
                 ));
             }
-            ResolvedTokenKind::GitStatus {
-                ahead,
-                behind,
-                dirty,
-            } => {
-                if *ahead > 0 {
-                    spans.push(Span::styled(
-                        format!("↑{ahead}"),
-                        apply_token_style(Style::default().fg(p.green), token.style),
-                    ));
-                }
-                if *ahead > 0 && *behind > 0 {
-                    spans.push(Span::styled(
-                        " ",
-                        apply_token_style(Style::default(), token.style),
-                    ));
-                }
-                if *behind > 0 {
-                    spans.push(Span::styled(
-                        format!("↓{behind}"),
-                        apply_token_style(Style::default().fg(p.red), token.style),
-                    ));
-                }
+            ResolvedTokenKind::GitStatus { dirty } => {
                 if *dirty > 0 {
-                    if *ahead > 0 || *behind > 0 {
-                        spans.push(Span::styled(
-                            " ",
-                            apply_token_style(Style::default(), token.style),
-                        ));
-                    }
                     spans.push(Span::styled(
                         format!("●{dirty}"),
                         apply_token_style(Style::default().fg(p.peach), token.style),
@@ -1472,7 +1435,6 @@ fn render_workspace_list(
                 workspace: &display_label,
                 branch: ws.branch().as_deref(),
                 state_text: state_label(display_state, display_seen),
-                ahead_behind: ws.git_ahead_behind(),
                 dirty: ws.git_dirty().unwrap_or(0),
                 tokens: &token_values,
                 suppress_git_details: card.indented,
@@ -1997,7 +1959,7 @@ rows = [[{ token = "$hype", fg = "#abcdef", bold = true, dim = false }, "workspa
     }
 
     #[test]
-    fn occurrence_foreground_flattens_composite_git_status_colors() {
+    fn occurrence_foreground_overrides_git_status_color() {
         let config: crate::config::Config = toml::from_str(
             r##"[ui.sidebar.spaces]
 rows = [[{ token = "git_status", fg = "#123456" }]]
@@ -2006,11 +1968,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         .unwrap();
         let spans = resolved_token_spans(
             &[ResolvedToken {
-                kind: ResolvedTokenKind::GitStatus {
-                    ahead: 2,
-                    behind: 1,
-                    dirty: 0,
-                },
+                kind: ResolvedTokenKind::GitStatus { dirty: 3 },
                 style: config.ui.sidebar.spaces.rows[0][0].parts().1,
             }],
             ("", Style::default()),
@@ -2027,7 +1985,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 .iter()
                 .map(|span| span.content.as_ref())
                 .collect::<String>(),
-            "↑2 ↓1"
+            "●3"
         );
         assert!(spans
             .iter()
