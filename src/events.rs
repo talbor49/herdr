@@ -58,6 +58,12 @@ pub enum AppEvent {
     /// a clean voluntary process exit (nonzero status, signal, or no exit
     /// status was available at all, as with a handoff-imported pane).
     PaneDied { pane_id: PaneId, abnormal: bool },
+    /// Process detection identified an agent before its screen state was confirmed.
+    AgentProcessDetected {
+        pane_id: PaneId,
+        agent: Agent,
+        observed_at: Instant,
+    },
     /// Fallback detector state changed in a pane.
     StateChanged {
         pane_id: PaneId,
