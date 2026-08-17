@@ -277,6 +277,7 @@ impl IndexedKeybind {
 fn indexed_key_position(code: KeyCode) -> Option<usize> {
     match code {
         KeyCode::Char(digit @ '1'..='9') => Some(digit as usize - '1' as usize),
+        KeyCode::Char('0') => Some(9),
         KeyCode::F(n @ 1..=12) => Some(n as usize - 1),
         _ => None,
     }
@@ -2130,6 +2131,28 @@ focus_agent = "f1..f11"
             let key = TerminalKey::new(KeyCode::F(idx as u8 + 1), KeyModifiers::empty());
             assert_eq!(binding.matched_index(&key), Some(idx));
         }
+    }
+
+    #[test]
+    fn zero_key_binds_the_tenth_indexed_slot() {
+        let config: Config = toml::from_str(
+            r#"
+[keys]
+focus_agent = ["ctrl+1..9", "ctrl+0"]
+"#,
+        )
+        .unwrap();
+
+        let kb = config.keybinds();
+        assert_eq!(kb.focus_agent.len(), 10);
+        assert!(config.collect_diagnostics().is_empty());
+        let zero = TerminalKey::new(KeyCode::Char('0'), KeyModifiers::CONTROL);
+        assert_eq!(
+            kb.focus_agent
+                .iter()
+                .find_map(|binding| binding.matched_index(&zero)),
+            Some(9)
+        );
     }
 
     #[test]
