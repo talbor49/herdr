@@ -1773,6 +1773,9 @@ mod tests {
             (b"\x1b[57423;1u", KeyCode::Home, KeyModifiers::empty()),
             (b"\x1bOq", KeyCode::Char('1'), KeyModifiers::empty()),
             (b"\x1b[14~", KeyCode::F(4), KeyModifiers::empty()),
+            (b"\x1b[P", KeyCode::F(1), KeyModifiers::empty()),
+            (b"\x1b[S", KeyCode::F(4), KeyModifiers::empty()),
+            (b"\x1b[23~", KeyCode::F(11), KeyModifiers::empty()),
             (b"\x1b[49:33;2:1u", KeyCode::Char('1'), KeyModifiers::SHIFT),
         ];
 

@@ -167,10 +167,19 @@ fn parse_legacy_special_sequence(data: &str) -> Option<TerminalKey> {
         "\x1bOj" => Some(TerminalKey::new(KeyCode::Char('*'), KeyModifiers::empty())),
         "\x1bOo" => Some(TerminalKey::new(KeyCode::Char('/'), KeyModifiers::empty())),
         "\x1bOM" => Some(TerminalKey::new(KeyCode::Enter, KeyModifiers::empty())),
-        "\x1bOP" | "\x1b[11~" => Some(TerminalKey::new(KeyCode::F(1), KeyModifiers::empty())),
-        "\x1bOQ" | "\x1b[12~" => Some(TerminalKey::new(KeyCode::F(2), KeyModifiers::empty())),
-        "\x1bOR" | "\x1b[13~" => Some(TerminalKey::new(KeyCode::F(3), KeyModifiers::empty())),
-        "\x1bOS" | "\x1b[14~" => Some(TerminalKey::new(KeyCode::F(4), KeyModifiers::empty())),
+        // Kitty disambiguate mode reports F1-F4 as CSI instead of SS3.
+        "\x1bOP" | "\x1b[11~" | "\x1b[P" => {
+            Some(TerminalKey::new(KeyCode::F(1), KeyModifiers::empty()))
+        }
+        "\x1bOQ" | "\x1b[12~" | "\x1b[Q" => {
+            Some(TerminalKey::new(KeyCode::F(2), KeyModifiers::empty()))
+        }
+        "\x1bOR" | "\x1b[13~" | "\x1b[R" => {
+            Some(TerminalKey::new(KeyCode::F(3), KeyModifiers::empty()))
+        }
+        "\x1bOS" | "\x1b[14~" | "\x1b[S" => {
+            Some(TerminalKey::new(KeyCode::F(4), KeyModifiers::empty()))
+        }
         "\x1b[15~" => Some(TerminalKey::new(KeyCode::F(5), KeyModifiers::empty())),
         "\x1b[17~" => Some(TerminalKey::new(KeyCode::F(6), KeyModifiers::empty())),
         "\x1b[18~" => Some(TerminalKey::new(KeyCode::F(7), KeyModifiers::empty())),
